@@ -331,70 +331,6 @@ async function main() {
       category: 'Core',
     },
 
-    // Leather & Fashion Technology
-    {
-      subject_code: 'LFT-201',
-      subject_name: 'Raw Materials & Leather Chemistry',
-      program_id: btechId,
-      branch_code: 'LFT',
-      year_number: 2,
-      semester_number: 3,
-      credits: 4.0,
-      category: 'Core',
-    },
-    {
-      subject_code: 'LFT-301',
-      subject_name: 'Footwear & Fashion Product Design Technology',
-      program_id: btechId,
-      branch_code: 'LFT',
-      year_number: 3,
-      semester_number: 5,
-      credits: 4.0,
-      category: 'Core',
-    },
-
-    // Computer Science and Engineering (AIML)
-    {
-      subject_code: 'AIML-201',
-      subject_name: 'Foundations of Artificial Intelligence & Knowledge Representation',
-      program_id: btechId,
-      branch_code: 'AIML',
-      year_number: 2,
-      semester_number: 3,
-      credits: 4.0,
-      category: 'Core',
-    },
-    {
-      subject_code: 'AIML-202',
-      subject_name: 'Machine Learning Algorithms & Techniques',
-      program_id: btechId,
-      branch_code: 'AIML',
-      year_number: 2,
-      semester_number: 4,
-      credits: 4.0,
-      category: 'Core',
-    },
-    {
-      subject_code: 'AIML-301',
-      subject_name: 'Deep Learning & Neural Architectures',
-      program_id: btechId,
-      branch_code: 'AIML',
-      year_number: 3,
-      semester_number: 5,
-      credits: 4.0,
-      category: 'Core',
-    },
-    {
-      subject_code: 'AIML-302',
-      subject_name: 'Natural Language Processing & Computer Vision',
-      program_id: btechId,
-      branch_code: 'AIML',
-      year_number: 3,
-      semester_number: 6,
-      credits: 4.0,
-      category: 'Core',
-    },
-
     // B.Pharm
     {
       subject_code: 'BP-101T',
@@ -485,6 +421,16 @@ async function main() {
     console.error('❌ Error inserting subjects:', subjErr.message);
   } else {
     console.log(`   ✅ Inserted/Updated ${insertedSubjects.length} subjects for newly configured branches.`);
+  }
+
+  // 7. Seed Official Course Curriculum for CSE, AIML, LFT, and BBA
+  console.log('\n7. Seeding Official Full Curriculum for CSE, AIML, LFT, and BBA...');
+  try {
+    const { execSync } = await import('child_process');
+    execSync('node --env-file=.env.local scripts/seed-curriculum-cse-aiml-lft.mjs', { stdio: 'inherit' });
+    execSync('node --env-file=.env.local scripts/seed-curriculum-bba.mjs', { stdio: 'inherit' });
+  } catch (err) {
+    console.warn('   ⚠️ Could not automatically execute official curriculum seeds:', err.message);
   }
 
   console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

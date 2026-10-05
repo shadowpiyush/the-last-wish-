@@ -27,6 +27,8 @@ export async function POST(request: Request) {
     const cleanEmail = email.trim().toLowerCase()
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL
 
     if (!supabaseUrl || !serviceKey || supabaseUrl.includes('placeholder.supabase.co')) {
       return NextResponse.json(
@@ -35,24 +37,40 @@ export async function POST(request: Request) {
       )
     }
 
+    if (!anonKey) {
+      return NextResponse.json(
+        { error: 'Supabase anon key not configured' },
+        { status: 500 }
+      )
+    }
+
+    // Service-role client — used ONLY for profile upsert and program/branch validation
     const supabaseAdmin = createClient(supabaseUrl, serviceKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     })
 
-    // Create user with email auto-confirmed so they can log in immediately
-    // ROLE IS ALWAYS STUDENT. Never trust client-side input for admin creation.
-    const { data, error } = await supabaseAdmin.auth.admin.createUser({
+    // Normal auth client using anon key — Supabase will send a confirmation email
+    const supabaseAuth = createClient(supabaseUrl, anonKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+
+    // Sign up user via the normal Supabase auth flow.
+    // Supabase's "Confirm email" setting will send a verification email.
+    // ROLE IS ALWAYS STUDENT. Never trust client-side input for role.
+    const { data, error } = await supabaseAuth.auth.signUp({
       email: cleanEmail,
       password,
-      email_confirm: true,
-      user_metadata: {
-        full_name: fullName.trim(),
-        mobile_number: normalizedMobile,
-        program_id: programId || 'btech',
-        branch_id: branchId || 'btech-cse',
-        current_year: currentYear || 1,
-        current_semester: currentSemester || 1,
-        role: 'student', // HARDCODED FOR SECURITY
+      options: {
+        emailRedirectTo: `${appUrl || 'http://localhost:3000'}/auth/callback`,
+        data: {
+          full_name: fullName.trim(),
+          mobile_number: normalizedMobile,
+          program_id: programId || 'btech',
+          branch_id: branchId || 'btech-cse',
+          current_year: currentYear || 1,
+          current_semester: currentSemester || 1,
+          role: 'student', // HARDCODED FOR SECURITY
+        },
       },
     })
 
@@ -60,7 +78,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 400 })
     }
 
+    // Supabase returns the user even before email confirmation.
+    // If user already exists and is unconfirmed, signUp returns a user with
+    // identities as an empty array. Detect this to avoid duplicate profiles.
+    if (data?.user && data.user.identities && data.user.identities.length === 0) {
+      return NextResponse.json(
+        { error: 'An account with this email already exists. Please sign in or check your email for the verification link.' },
+        { status: 409 }
+      )
+    }
+
     // Upsert profile record with verified UUIDs for program and branch
+    // Using the service-role client for server-side DB operations
     if (data?.user) {
       let validProgId: string | null = null
       let validBranchId: string | null = null
@@ -92,7 +121,11 @@ export async function POST(request: Request) {
       }
     }
 
-    return NextResponse.json({ success: true, user: data.user })
+    return NextResponse.json({
+      success: true,
+      requiresEmailVerification: true,
+      message: 'Registration successful! Please check your email (including spam/junk folder) and click the verification link to activate your account.',
+    })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Registration failed'
     return NextResponse.json({ error: message }, { status: 500 })

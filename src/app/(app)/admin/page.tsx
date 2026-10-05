@@ -17,7 +17,7 @@ export default async function AdminPage() {
   const authCheck = await verifyAdmin()
 
   if (!authCheck.user) {
-    redirect('/auth/login?redirect=/admin')
+    redirect('/auth?redirect=/admin')
   }
 
   if (!authCheck.isAdmin) {

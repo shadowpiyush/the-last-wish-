@@ -179,7 +179,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const cleanMobile = mobileCheck.normalized!
 
-    // Register via server API route which auto-confirms email and sets role strictly to student
+    // Register via server API route which sends a confirmation email; does NOT auto-sign in
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
@@ -202,8 +202,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error(data.error || 'Registration failed')
       }
 
-      // We do not sign in automatically after registration.
-      // The user must manually sign in with their new credentials.
+      // Registration succeeded — user must verify their email before signing in.
+      if (data.requiresEmailVerification) {
+        showToast({
+          type: 'success',
+          message: data.message || 'Please check your email and click the verification link to activate your account.',
+        })
+      }
+
+      // We do NOT sign in automatically after registration.
+      // The user must verify their email first, then sign in.
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : 'Registration failed'
       showToast({ type: 'error', message: errMsg })

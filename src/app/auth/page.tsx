@@ -98,7 +98,11 @@ function AuthPageInner() {
     if (user && !authLoading) {
       setRedirecting(true)
       const explicitRedirect = searchParams.get('redirect')
-      const target = explicitRedirect || (profile?.role === 'admin' ? '/admin' : '/dashboard')
+      const safeRedirect =
+        explicitRedirect && explicitRedirect.startsWith('/') && !explicitRedirect.startsWith('//')
+          ? explicitRedirect
+          : null
+      const target = safeRedirect || (profile?.role === 'admin' ? '/admin' : '/dashboard')
       window.location.href = target
     }
   }, [user, profile, authLoading, searchParams])
@@ -215,7 +219,7 @@ function AuthPageInner() {
         currentYear: regYear,
         currentSemester: regSemester,
       })
-      setSuccessMessage('Account created successfully! Please sign in with your credentials.')
+      setSuccessMessage('Registration successful! Please check your email (including spam/junk folder) and click the verification link to activate your account before signing in.')
       setLoginEmail(regEmail)
       setLoginPassword('')
       setStep('credentials')

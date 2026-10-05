@@ -1,7 +1,20 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { GraduationCap, BookOpen, Clock, Award, Search, Filter } from 'lucide-react'
+import {
+  GraduationCap,
+  BookOpen,
+  Clock,
+  Award,
+  Search,
+  Filter,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
+  Layers,
+  CheckCircle2,
+  Info,
+} from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
 interface Program {
@@ -38,6 +51,65 @@ interface CurriculumClientProps {
   initialSubjects: Subject[]
 }
 
+// Category badge styling helper
+function getCategoryColor(category: string) {
+  const cat = (category || '').toLowerCase()
+  if (cat.includes('basic science') || cat.includes('bsc')) {
+    return { bg: 'rgba(59, 130, 246, 0.1)', color: '#2563eb', border: 'rgba(59, 130, 246, 0.25)' }
+  }
+  if (cat.includes('engineering science') || cat.includes('esc')) {
+    return { bg: 'rgba(139, 92, 246, 0.1)', color: '#7c3aed', border: 'rgba(139, 92, 246, 0.25)' }
+  }
+  if (cat.includes('skill enhancement') || cat.includes('sec')) {
+    return { bg: 'rgba(16, 185, 129, 0.1)', color: '#059669', border: 'rgba(16, 185, 129, 0.25)' }
+  }
+  if (cat.includes('humanities') || cat.includes('hmsc')) {
+    return { bg: 'rgba(245, 158, 11, 0.1)', color: '#d97706', border: 'rgba(245, 158, 11, 0.25)' }
+  }
+  if (cat.includes('marketing')) {
+    return { bg: 'rgba(225, 29, 72, 0.1)', color: '#e11d48', border: 'rgba(225, 29, 72, 0.25)' }
+  }
+  if (cat.includes('finance')) {
+    return { bg: 'rgba(16, 185, 129, 0.1)', color: '#059669', border: 'rgba(16, 185, 129, 0.25)' }
+  }
+  if (cat.includes('hr') || cat.includes('human resource')) {
+    return { bg: 'rgba(147, 51, 234, 0.1)', color: '#9333ea', border: 'rgba(147, 51, 234, 0.25)' }
+  }
+  if (cat.includes('analytics')) {
+    return { bg: 'rgba(245, 158, 11, 0.1)', color: '#d97706', border: 'rgba(245, 158, 11, 0.25)' }
+  }
+  if (cat.includes('project') || cat.includes('internship') || cat.includes('research')) {
+    return { bg: 'rgba(79, 70, 229, 0.1)', color: '#4f46e5', border: 'rgba(79, 70, 229, 0.25)' }
+  }
+  if (cat.includes('ability enhancement')) {
+    return { bg: 'rgba(6, 182, 212, 0.1)', color: '#0891b2', border: 'rgba(6, 182, 212, 0.25)' }
+  }
+  if (cat.includes('program core') || cat.includes('pcc') || cat === 'core') {
+    return { bg: 'rgba(155, 28, 49, 0.1)', color: '#9b1c31', border: 'rgba(155, 28, 49, 0.25)' }
+  }
+  if (cat.includes('program elective') || cat.includes('pec')) {
+    return { bg: 'rgba(6, 182, 212, 0.1)', color: '#0891b2', border: 'rgba(6, 182, 212, 0.25)' }
+  }
+  if (cat.includes('open elective') || cat.includes('oec')) {
+    return { bg: 'rgba(99, 102, 241, 0.1)', color: '#4f46e5', border: 'rgba(99, 102, 241, 0.25)' }
+  }
+  if (cat.includes('mandatory') || cat.includes('mc')) {
+    return { bg: 'rgba(107, 114, 128, 0.1)', color: '#4b5563', border: 'rgba(107, 114, 128, 0.25)' }
+  }
+  return { bg: 'rgba(107, 114, 128, 0.08)', color: 'var(--text-secondary)', border: 'var(--border-light)' }
+}
+
+// Parse elective subject name and its options
+function parseSubjectName(name: string) {
+  const match = name.match(/^(.*?)\s*\((.*?)\)$/)
+  if (match && match[2].includes('/')) {
+    const mainTitle = match[1].trim()
+    const options = match[2].split('/').map((s) => s.trim()).filter(Boolean)
+    return { mainTitle, options }
+  }
+  return { mainTitle: name, options: [] }
+}
+
 export function CurriculumClient({
   initialPrograms,
   initialBranches,
@@ -54,6 +126,8 @@ export function CurriculumClient({
   const [subjects, setSubjects] = useState<Subject[]>(initialSubjects)
   const [loading, setLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [showNepBreakdown, setShowNepBreakdown] = useState(false)
+  const [bbaTrackFilter, setBbaTrackFilter] = useState<'ALL' | 'CORE' | 'MARKETING' | 'FINANCE' | 'HR' | 'ANALYTICS'>('ALL')
 
   // When selectedProgram changes, fetch its branches
   useEffect(() => {
@@ -67,7 +141,9 @@ export function CurriculumClient({
         const list = data || []
         setBranches(list)
         if (list.length > 0 && !list.some((b: Branch) => b.id === selectedBranch)) {
-          setSelectedBranch(list[0].id)
+          // Prioritize CSE when switching to B.Tech, or BBA for BBA
+          const preferred = list.find((b) => b.code === 'CSE') || list[0]
+          setSelectedBranch(preferred.id)
         }
       })
   }, [selectedProgram]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -95,8 +171,32 @@ export function CurriculumClient({
   const currentBranch = branches.find((b) => b.id === selectedBranch)
   const branchDisplayName = currentBranch ? `[${currentBranch.code}] ${currentBranch.name}` : ''
 
-  // Filter subjects by search
+  const isNep2020Branch = currentBranch?.code === 'CSE' || currentBranch?.code === 'AIML'
+  const isLftBranch = currentBranch?.code === 'LFT'
+  const isBbaProgram = currentProg?.short_code === 'BBA'
+
+  // Filter subjects by search and BBA Track
   const filteredSubjects = subjects.filter((s) => {
+    // BBA specialization track filtering
+    if (isBbaProgram && bbaTrackFilter !== 'ALL') {
+      const cat = (s.category || '').toLowerCase()
+      if (bbaTrackFilter === 'CORE' && !cat.includes('core') && !cat.includes('skill') && !cat.includes('humanities') && !cat.includes('ability') && !cat.includes('project') && !cat.includes('internship') && !cat.includes('research')) {
+        return false
+      }
+      if (bbaTrackFilter === 'MARKETING' && !cat.includes('marketing') && !cat.includes('core') && !cat.includes('project') && !cat.includes('internship') && !cat.includes('research')) {
+        return false
+      }
+      if (bbaTrackFilter === 'FINANCE' && !cat.includes('finance') && !cat.includes('core') && !cat.includes('project') && !cat.includes('internship') && !cat.includes('research')) {
+        return false
+      }
+      if (bbaTrackFilter === 'HR' && !cat.includes('hr') && !cat.includes('human resource') && !cat.includes('core') && !cat.includes('project') && !cat.includes('internship') && !cat.includes('research')) {
+        return false
+      }
+      if (bbaTrackFilter === 'ANALYTICS' && !cat.includes('analytics') && !cat.includes('core') && !cat.includes('project') && !cat.includes('internship') && !cat.includes('research')) {
+        return false
+      }
+    }
+
     if (!searchQuery.trim()) return true
     const q = searchQuery.toLowerCase()
     return (
@@ -120,7 +220,7 @@ export function CurriculumClient({
   return (
     <div>
       {/* Program Quick-Switch Tabs */}
-      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
         {programs.map((p) => {
           const isSelected = selectedProgram === p.id
           let label = p.short_code
@@ -149,6 +249,265 @@ export function CurriculumClient({
           )
         })}
       </div>
+
+      {/* Quick Branch Selector Pills */}
+      {branches.length > 0 && (
+        <div style={{ marginBottom: '1.25rem' }}>
+          <div style={{ fontSize: '0.6875rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 6, letterSpacing: '0.05em' }}>
+            Select Branch / Specialization:
+          </div>
+          <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+            {branches.map((b) => {
+              const isSelected = selectedBranch === b.id
+              const isOfficialCurriculum = b.code === 'CSE' || b.code === 'AIML' || b.code === 'LFT' || b.code === 'BBA'
+
+              return (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => setSelectedBranch(b.id)}
+                  style={{
+                    padding: '0.35rem 0.75rem',
+                    fontSize: '0.75rem',
+                    fontWeight: isSelected ? 700 : 500,
+                    borderRadius: 'var(--radius-md)',
+                    border: isSelected
+                      ? '1px solid #9b1c31'
+                      : isOfficialCurriculum
+                      ? '1px solid rgba(79, 70, 229, 0.25)'
+                      : '1px solid var(--border-light)',
+                    background: isSelected
+                      ? '#9b1c31'
+                      : isOfficialCurriculum
+                      ? 'rgba(79, 70, 229, 0.05)'
+                      : 'var(--bg-card)',
+                    color: isSelected ? '#ffffff' : 'var(--text-primary)',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <span>[{b.code}] {b.name}</span>
+                  {isOfficialCurriculum && (
+                    <span
+                      style={{
+                        fontSize: '0.625rem',
+                        padding: '1px 5px',
+                        borderRadius: 'var(--radius-full)',
+                        background: isSelected ? 'rgba(255, 255, 255, 0.25)' : 'rgba(79, 70, 229, 0.15)',
+                        color: isSelected ? '#ffffff' : '#4f46e5',
+                        fontWeight: 700,
+                      }}
+                    >
+                      {b.code === 'LFT' ? '2025-26' : b.code === 'BBA' ? '2024-25' : 'NEP 2020'}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Official Curriculum Banner for CSE & AIML (NEP 2020) */}
+      {isNep2020Branch && (
+        <div
+          className="glass-card"
+          style={{
+            padding: '1.25rem 1.5rem',
+            marginBottom: '1.5rem',
+            borderLeft: '4px solid #4f46e5',
+            background: 'linear-gradient(135deg, rgba(79, 70, 229, 0.06) 0%, rgba(155, 28, 49, 0.04) 100%)',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <span className="badge badge-indigo" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+                  <Sparkles size={11} style={{ display: 'inline', marginRight: 3 }} />
+                  Official HBTU NEP 2020 Curriculum
+                </span>
+                <span className="badge badge-neutral" style={{ fontSize: '0.6875rem' }}>
+                  Academic Session: 2026-27
+                </span>
+              </div>
+              <h2 style={{ fontSize: '1.125rem', fontWeight: 800, fontFamily: 'var(--font-display)', margin: 0 }}>
+                Department of Computer Science & Engineering
+              </h2>
+              <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: 4, marginBottom: 0 }}>
+                Course Curriculum for <strong style={{ color: 'var(--text-primary)' }}>B. Tech. {currentBranch?.name}</strong> · Total: 172 Credits · 214 Contact Hours
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowNepBreakdown(!showNepBreakdown)}
+              className="btn btn-secondary"
+              style={{
+                fontSize: '0.75rem',
+                padding: '0.4rem 0.8rem',
+                gap: 5,
+                borderRadius: 'var(--radius-md)',
+              }}
+            >
+              <Layers size={14} />
+              {showNepBreakdown ? 'Hide Course Components' : 'View Course Components (Page 2)'}
+              {showNepBreakdown ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
+          </div>
+
+          {/* NEP 2020 Course Component Breakdown Table */}
+          {showNepBreakdown && (
+            <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-light)' }}>
+              <div style={{ fontSize: '0.8125rem', fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Info size={14} color="#4f46e5" />
+                Curriculum Content & Credit Distribution (NEP 2020):
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border-light)', background: 'rgba(0,0,0,0.02)' }}>
+                      <th style={{ textAlign: 'left', padding: '0.4rem 0.6rem', color: 'var(--text-tertiary)' }}>Sr.</th>
+                      <th style={{ textAlign: 'left', padding: '0.4rem 0.6rem', color: 'var(--text-tertiary)' }}>Course Component</th>
+                      <th style={{ textAlign: 'center', padding: '0.4rem 0.6rem', color: 'var(--text-tertiary)' }}>% of Total Credits</th>
+                      <th style={{ textAlign: 'center', padding: '0.4rem 0.6rem', color: 'var(--text-tertiary)' }}>Contact Hours</th>
+                      <th style={{ textAlign: 'center', padding: '0.4rem 0.6rem', color: 'var(--text-tertiary)' }}>Total Credits</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[
+                      { sr: 1, name: 'Basic Sciences (BSC)', pct: '11.62%', hours: 21, credits: 20 },
+                      { sr: 2, name: 'Engineering Sciences (ESC)', pct: '10.46%', hours: '05', credits: 18 },
+                      { sr: 3, name: 'Skill Enhancement (SEC)', pct: '2.32%', hours: '08', credits: '04' },
+                      { sr: 4, name: 'Humanities and Social Sciences (HMSC)', pct: '5.23%', hours: 11, credits: 9 },
+                      { sr: 5, name: 'Program Core (PCC)', pct: '59.88%', hours: 135, credits: 103 },
+                      { sr: 6, name: 'Mandatory Course (MC)', pct: '0.00%', hours: '00', credits: '00' },
+                      { sr: 7, name: 'Program Electives (PEC)', pct: '6.98%', hours: 12, credits: 12 },
+                      { sr: 8, name: 'Open Electives (OEC)', pct: '3.49%', hours: '06', credits: '06' },
+                    ].map((row) => (
+                      <tr key={row.sr} style={{ borderBottom: '1px solid var(--border-light)' }}>
+                        <td style={{ padding: '0.35rem 0.6rem', color: 'var(--text-tertiary)' }}>{row.sr}</td>
+                        <td style={{ padding: '0.35rem 0.6rem', fontWeight: 600 }}>{row.name}</td>
+                        <td style={{ padding: '0.35rem 0.6rem', textAlign: 'center' }}>{row.pct}</td>
+                        <td style={{ padding: '0.35rem 0.6rem', textAlign: 'center' }}>{row.hours}</td>
+                        <td style={{ padding: '0.35rem 0.6rem', textAlign: 'center', fontWeight: 700, color: '#9b1c31' }}>{row.credits}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ background: 'rgba(79, 70, 229, 0.08)', fontWeight: 800 }}>
+                      <td colSpan={2} style={{ padding: '0.5rem 0.6rem' }}>Total</td>
+                      <td style={{ padding: '0.5rem 0.6rem', textAlign: 'center' }}>100.00%</td>
+                      <td style={{ padding: '0.5rem 0.6rem', textAlign: 'center' }}>214</td>
+                      <td style={{ padding: '0.5rem 0.6rem', textAlign: 'center', color: '#9b1c31' }}>172</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Official Curriculum Banner for LFT (Session 2025-26) */}
+      {isLftBranch && (
+        <div
+          className="glass-card"
+          style={{
+            padding: '1.25rem 1.5rem',
+            marginBottom: '1.5rem',
+            borderLeft: '4px solid #9b1c31',
+            background: 'linear-gradient(135deg, rgba(155, 28, 49, 0.06) 0%, rgba(245, 158, 11, 0.04) 100%)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <span className="badge badge-maroon" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+              Official Evaluation Scheme
+            </span>
+            <span className="badge badge-neutral" style={{ fontSize: '0.6875rem' }}>
+              Applicable from Session 2025-26
+            </span>
+          </div>
+          <h2 style={{ fontSize: '1.125rem', fontWeight: 800, fontFamily: 'var(--font-display)', margin: 0 }}>
+            Department of Leather and Fashion Technology
+          </h2>
+          <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: 4, marginBottom: 0 }}>
+            B. Tech. Chemical Technology - Leather and Fashion Technology · Semester Wise Course Structure & Evaluation Scheme · Total: 178 Credits
+          </p>
+        </div>
+      )}
+
+      {/* Official Curriculum Banner for BBA (Session 2024-25) */}
+      {isBbaProgram && (
+        <div
+          className="glass-card"
+          style={{
+            padding: '1.25rem 1.5rem',
+            marginBottom: '1.5rem',
+            borderLeft: '4px solid #f59e0b',
+            background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.06) 0%, rgba(79, 70, 229, 0.04) 100%)',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <span className="badge badge-amber" style={{ fontSize: '0.6875rem', fontWeight: 700, background: 'rgba(245, 158, 11, 0.15)', color: '#d97706' }}>
+                  <Sparkles size={11} style={{ display: 'inline', marginRight: 3 }} />
+                  Official Study & Evaluation Scheme with Syllabus
+                </span>
+                <span className="badge badge-neutral" style={{ fontSize: '0.6875rem' }}>
+                  Academic Session: 2024-25
+                </span>
+              </div>
+              <h2 style={{ fontSize: '1.125rem', fontWeight: 800, fontFamily: 'var(--font-display)', margin: 0 }}>
+                Department of Management Studies · School of Entrepreneurship & Management
+              </h2>
+              <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: 4, marginBottom: 0 }}>
+                Bachelor of Business Administration (BBA) · 3 Years / 6 Semesters · Specializations in Marketing, Finance, HR & Business Analytics
+              </p>
+            </div>
+          </div>
+
+          {/* BBA Specialization Track Filter Pills */}
+          <div style={{ marginTop: '1rem', paddingTop: '0.85rem', borderTop: '1px solid var(--border-light)' }}>
+            <div style={{ fontSize: '0.6875rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: 6, letterSpacing: '0.05em' }}>
+              Filter by Specialization Track (Semesters V & VI):
+            </div>
+            <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+              {[
+                { id: 'ALL', label: 'All Subjects (Complete Overview)' },
+                { id: 'CORE', label: 'Core & Projects Only' },
+                { id: 'MARKETING', label: '🎯 Marketing Specialization' },
+                { id: 'FINANCE', label: '💰 Finance Specialization' },
+                { id: 'HR', label: '👥 Human Resource (HR)' },
+                { id: 'ANALYTICS', label: '📊 Business Analytics' },
+              ].map((trk) => {
+                const isSelected = bbaTrackFilter === trk.id
+                return (
+                  <button
+                    key={trk.id}
+                    type="button"
+                    onClick={() => setBbaTrackFilter(trk.id as any)}
+                    style={{
+                      padding: '0.3rem 0.65rem',
+                      fontSize: '0.75rem',
+                      fontWeight: isSelected ? 700 : 500,
+                      borderRadius: 'var(--radius-full)',
+                      border: isSelected ? '1px solid #d97706' : '1px solid var(--border-light)',
+                      background: isSelected ? 'rgba(245, 158, 11, 0.15)' : 'var(--bg-card)',
+                      color: isSelected ? '#b45309' : 'var(--text-secondary)',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    {trk.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Filter and Search Bar */}
       <div className="glass-card" style={{ padding: '1.25rem', marginBottom: '1.75rem' }}>
@@ -282,27 +641,72 @@ export function CurriculumClient({
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
                       <thead>
                         <tr style={{ borderBottom: '1px solid var(--border-light)' }}>
-                          <th style={{ textAlign: 'left', padding: '0.5rem', color: 'var(--text-tertiary)', fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase' }}>Code</th>
-                          <th style={{ textAlign: 'left', padding: '0.5rem', color: 'var(--text-tertiary)', fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase' }}>Subject Name</th>
-                          <th style={{ textAlign: 'center', padding: '0.5rem', color: 'var(--text-tertiary)', fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase' }}>Credits</th>
-                          <th style={{ textAlign: 'center', padding: '0.5rem', color: 'var(--text-tertiary)', fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase' }}>Hours</th>
-                          <th style={{ textAlign: 'left', padding: '0.5rem', color: 'var(--text-tertiary)', fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase' }}>Category</th>
+                          <th style={{ textAlign: 'left', padding: '0.5rem', color: 'var(--text-tertiary)', fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase', width: '110px' }}>Code</th>
+                          <th style={{ textAlign: 'left', padding: '0.5rem', color: 'var(--text-tertiary)', fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase' }}>Subject Name & Elective Options</th>
+                          <th style={{ textAlign: 'center', padding: '0.5rem', color: 'var(--text-tertiary)', fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase', width: '70px' }}>Credits</th>
+                          <th style={{ textAlign: 'center', padding: '0.5rem', color: 'var(--text-tertiary)', fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase', width: '70px' }}>Hours</th>
+                          <th style={{ textAlign: 'left', padding: '0.5rem', color: 'var(--text-tertiary)', fontWeight: 600, fontSize: '0.6875rem', textTransform: 'uppercase', width: '160px' }}>Category</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {semSubjects.map((sub) => (
-                          <tr key={sub.id} style={{ borderBottom: '1px solid var(--border-light)' }}>
-                            <td style={{ padding: '0.625rem 0.5rem' }}>
-                              <span className="badge badge-maroon" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>{sub.subject_code}</span>
-                            </td>
-                            <td style={{ padding: '0.625rem 0.5rem', fontWeight: 600 }}>{sub.subject_name}</td>
-                            <td style={{ padding: '0.625rem 0.5rem', textAlign: 'center', fontWeight: 700, color: '#9b1c31' }}>{sub.credits}</td>
-                            <td style={{ padding: '0.625rem 0.5rem', textAlign: 'center' }}>{sub.hours}</td>
-                            <td style={{ padding: '0.625rem 0.5rem' }}>
-                              <span className="badge badge-neutral" style={{ fontSize: '0.625rem' }}>{sub.category}</span>
-                            </td>
-                          </tr>
-                        ))}
+                        {semSubjects.map((sub) => {
+                          const { mainTitle, options } = parseSubjectName(sub.subject_name)
+                          const catColor = getCategoryColor(sub.category)
+
+                          return (
+                            <tr key={sub.id} style={{ borderBottom: '1px solid var(--border-light)' }}>
+                              <td style={{ padding: '0.625rem 0.5rem', verticalAlign: 'top' }}>
+                                <span className="badge badge-maroon" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+                                  {sub.subject_code}
+                                </span>
+                              </td>
+                              <td style={{ padding: '0.625rem 0.5rem', verticalAlign: 'top' }}>
+                                <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{mainTitle}</div>
+                                {options.length > 0 && (
+                                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
+                                    {options.map((opt, i) => (
+                                      <span
+                                        key={i}
+                                        style={{
+                                          fontSize: '0.6875rem',
+                                          padding: '2px 7px',
+                                          borderRadius: 'var(--radius-sm)',
+                                          background: 'rgba(79, 70, 229, 0.07)',
+                                          border: '1px solid rgba(79, 70, 229, 0.18)',
+                                          color: 'var(--text-secondary)',
+                                        }}
+                                      >
+                                        {opt}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </td>
+                              <td style={{ padding: '0.625rem 0.5rem', textAlign: 'center', fontWeight: 700, color: '#9b1c31', verticalAlign: 'top' }}>
+                                {sub.credits}
+                              </td>
+                              <td style={{ padding: '0.625rem 0.5rem', textAlign: 'center', verticalAlign: 'top' }}>
+                                {sub.hours}
+                              </td>
+                              <td style={{ padding: '0.625rem 0.5rem', verticalAlign: 'top' }}>
+                                <span
+                                  style={{
+                                    fontSize: '0.6875rem',
+                                    fontWeight: 600,
+                                    padding: '2px 8px',
+                                    borderRadius: 'var(--radius-sm)',
+                                    background: catColor.bg,
+                                    color: catColor.color,
+                                    border: `1px solid ${catColor.border}`,
+                                    display: 'inline-block',
+                                  }}
+                                >
+                                  {sub.category}
+                                </span>
+                              </td>
+                            </tr>
+                          )
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -322,3 +726,4 @@ export function CurriculumClient({
     </div>
   )
 }
+

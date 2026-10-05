@@ -43,7 +43,8 @@ export default async function CurriculumPage() {
       .order('name')
 
     defaultBranches = branches || []
-    defaultBranchId = defaultBranches[0]?.id || ''
+    const preferredBranch = defaultBranches.find((b) => b.code === 'CSE') || defaultBranches[0]
+    defaultBranchId = preferredBranch?.id || ''
 
     if (defaultBranchId) {
       const { data: subjectData } = await supabase
