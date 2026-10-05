@@ -124,6 +124,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
+      user: data?.user ? { id: data.user.id, email: data.user.email } : undefined,
       requiresEmailVerification: true,
       message: 'Registration successful! Please check your email (including spam/junk folder) and click the verification link to activate your account.',
     })

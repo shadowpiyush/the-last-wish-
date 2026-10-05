@@ -7,6 +7,7 @@
  * leak or redirect to external platforms (such as vercel.com).
  */
 
+export const CANONICAL_PRODUCTION_URL = 'https://harcourtian-study-hub.vercel.app'
 const FALLBACK_URL = 'http://localhost:3000'
 
 /**
@@ -15,11 +16,11 @@ const FALLBACK_URL = 'http://localhost:3000'
  * Priority:
  * 1. Client-side: window.location.origin (preserves current host/port accurately)
  * 2. Server-side: NEXT_PUBLIC_APP_URL (production custom domain or explicit canonical URL)
- * 3. Server-side Vercel Production: VERCEL_PROJECT_PRODUCTION_URL (canonical production alias)
+ * 3. Server-side Vercel Production: VERCEL_PROJECT_PRODUCTION_URL or CANONICAL_PRODUCTION_URL
  * 4. Fallback: http://localhost:3000
  */
 export function getBaseUrl(): string {
-  // 1. In the browser, always respect the active origin
+  // 1. In the browser, always respect the active origin if valid
   if (typeof window !== 'undefined' && window.location?.origin) {
     const origin = window.location.origin
     if (isValidAppOrigin(origin)) {
@@ -33,16 +34,15 @@ export function getBaseUrl(): string {
     return normalizeUrl(envAppUrl)
   }
 
-  // 3. Vercel project production domain (e.g. harcoutian-study-hub.vercel.app)
+  // 3. Vercel project production domain
   const vercelProdUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim()
   if (vercelProdUrl && isValidAppOrigin(vercelProdUrl)) {
     return normalizeUrl(vercelProdUrl)
   }
 
-  // 4. Vercel deployment URL (fallback for preview deployments if no production URL)
-  const vercelUrl = process.env.VERCEL_URL?.trim()
-  if (vercelUrl && isValidAppOrigin(vercelUrl)) {
-    return normalizeUrl(vercelUrl)
+  // 4. Default to canonical production URL when deployed on Vercel
+  if (process.env.VERCEL === '1') {
+    return CANONICAL_PRODUCTION_URL
   }
 
   return FALLBACK_URL
@@ -95,14 +95,20 @@ function isValidAppOrigin(urlOrHost: string): boolean {
 
   const lower = urlOrHost.toLowerCase().trim()
 
-  // STRICT BLOCK: Never allow redirecting to the Vercel management platform
+  // STRICT BLOCK: Never allow redirecting to the Vercel management platform or SSO endpoint
   if (
     lower === 'vercel.com' ||
     lower.startsWith('https://vercel.com') ||
     lower.startsWith('http://vercel.com') ||
     lower.includes('vercel.com/login') ||
-    lower.includes('vercel.com/dashboard')
+    lower.includes('vercel.com/dashboard') ||
+    lower.includes('vercel.com/sso-api')
   ) {
+    return false
+  }
+
+  // Block the SSO-protected duplicate preview URL
+  if (lower.includes('harcourtian-study-hub-harcourtian-study-hub.vercel.app')) {
     return false
   }
 
@@ -112,7 +118,11 @@ function isValidAppOrigin(urlOrHost: string): boolean {
 function isValidHost(host: string): boolean {
   if (!host) return false
   const lower = host.toLowerCase().trim()
-  if (lower === 'vercel.com' || lower.endsWith('.vercel.com')) {
+  if (
+    lower === 'vercel.com' ||
+    lower.endsWith('.vercel.com') ||
+    lower.includes('harcourtian-study-hub-harcourtian-study-hub.vercel.app')
+  ) {
     return false
   }
   return true

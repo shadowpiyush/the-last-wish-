@@ -1,31 +1,44 @@
 import { createClient } from '@supabase/supabase-js'
+import { createServerClient } from '@supabase/ssr'
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://iatoiiuqezaeuvtkdpvg.supabase.co'
+const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlhdG9paXVxZXphZXV2dGtkcHZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA4NzM4OTgsImV4cCI6MjEwNjQ0OTg5OH0.vkkuWjdgv59IOnKeXI9uKPNqu-fzuEwwlAe1nbXBvko'
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlhdG9paXVxZXphZXV2dGtkcHZnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDg3Mzg5OCwiZXhwIjoyMTA2NDQ5ODk4fQ.1UvU6drMDFmnT4tNEO3TTrPiaxWjXKjjUZUljXkds08'
 const BASE_URL = 'http://localhost:3000'
 
-const adminHeaders = {
-  'Content-Type': 'application/json',
-  Cookie: `sb-dev-session=${encodeURIComponent(
-    JSON.stringify({
-      id: '6872004c-42a9-4db5-9f63-d08990ac8eb4',
-      email: 'admin@harcoutianhub.in',
-      role: 'admin',
-      full_name: 'System Administrator',
-    })
-  )}`,
-}
+const adminClient = createClient(SUPABASE_URL, SERVICE_KEY)
 
-const studentHeaders = {
-  'Content-Type': 'application/json',
-  Cookie: `sb-dev-session=${encodeURIComponent(
-    JSON.stringify({
-      id: '198f3e0f-65bc-4747-874a-f09af9afc037',
-      email: 'student@harcoutianhub.in',
-      role: 'student',
-      full_name: 'Student Demo',
-    })
-  )}`,
+async function getAuthCookie(email) {
+  const { data: linkData, error: linkErr } = await adminClient.auth.admin.generateLink({
+    type: 'magiclink',
+    email,
+  })
+  if (linkErr || !linkData?.properties?.hashed_token) {
+    throw new Error(`Failed to generate link for ${email}: ${linkErr?.message}`)
+  }
+
+  const cookiesObj = {}
+  const ssrClient = createServerClient(SUPABASE_URL, ANON_KEY, {
+    cookies: {
+      getAll() {
+        return Object.entries(cookiesObj).map(([name, value]) => ({ name, value }))
+      },
+      setAll(cookiesToSet) {
+        cookiesToSet.forEach(({ name, value }) => {
+          cookiesObj[name] = value
+        })
+      }
+    }
+  })
+
+  const { error: verifyErr } = await ssrClient.auth.verifyOtp({
+    token_hash: linkData.properties.hashed_token,
+    type: 'email'
+  })
+
+  if (verifyErr) throw verifyErr
+
+  return Object.entries(cookiesObj).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('; ')
 }
 
 async function runTests() {
@@ -44,6 +57,20 @@ async function runTests() {
       console.error(`❌ FAIL: ${testName} ${detail ? `(${detail})` : ''}`)
       failed++
     }
+  }
+
+  console.log('Authenticating real admin and student test sessions...')
+  const adminCookie = await getAuthCookie('admin@harcoutianhub.in')
+  const studentCookie = await getAuthCookie('student@harcoutianhub.in')
+
+  const adminHeaders = {
+    'Content-Type': 'application/json',
+    Cookie: adminCookie,
+  }
+
+  const studentHeaders = {
+    'Content-Type': 'application/json',
+    Cookie: studentCookie,
   }
 
   // ─────────────────────────────────────────────────────────────
