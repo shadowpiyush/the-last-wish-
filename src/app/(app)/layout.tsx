@@ -7,16 +7,20 @@ import { AppShell } from '@/components/layout/AppShell'
 import { Loader2 } from 'lucide-react'
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth()
+  const { user, profile, loading } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
 
   useEffect(() => {
-    if (!loading && !user) {
-      const redirectUrl = pathname ? `/auth?redirect=${encodeURIComponent(pathname)}` : '/auth'
-      router.replace(redirectUrl)
+    if (!loading) {
+      if (!user) {
+        const redirectUrl = pathname ? `/auth?redirect=${encodeURIComponent(pathname)}` : '/auth'
+        router.replace(redirectUrl)
+      } else if (profile && (!profile.mobile_number || !profile.program_id)) {
+        router.replace('/complete-profile')
+      }
     }
-  }, [user, loading, router, pathname])
+  }, [user, profile, loading, router, pathname])
 
   // While checking auth state, show a clean loading indicator
   if (loading) {
@@ -39,8 +43,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     )
   }
 
-  // If not authenticated, render nothing while redirect occurs
-  if (!user) {
+  // If not authenticated or profile incomplete, render nothing while redirect occurs
+  if (!user || (profile && (!profile.mobile_number || !profile.program_id))) {
     return null
   }
 

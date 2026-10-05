@@ -34,11 +34,7 @@ interface AuthContextType {
   profile: UserProfile | null
   session: Session | null
   loading: boolean
-  isDevMode: boolean
-  signIn: (email: string, password: string) => Promise<void>
   signInWithOAuth: (provider: OAuthProvider) => Promise<void>
-  signInWithPhone: (phone: string) => Promise<void>
-  verifyPhoneOtp: (phone: string, token: string) => Promise<void>
   signUp: (params: SignUpParams) => Promise<void>
   signOut: () => Promise<void>
   updateProfile: (data: Partial<UserProfile>) => Promise<void>
@@ -68,29 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
   const { showToast } = useToast()
 
-  const isDevMode =
-    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL.includes('placeholder.supabase.co')
-
   const supabase = createClient()
-
-  const setDevCookie = (data: { id: string; email: string; role: 'admin' | 'student'; full_name: string }) => {
-    try {
-      document.cookie = `sb-dev-session=${encodeURIComponent(JSON.stringify(data))}; path=/; max-age=86400; SameSite=Lax`
-      localStorage.setItem('sb-dev-session', JSON.stringify(data))
-    } catch {
-      // ignore in SSR / restricted environments
-    }
-  }
-
-  const clearDevCookie = () => {
-    try {
-      document.cookie = 'sb-dev-session=; path=/; max-age=0; SameSite=Lax'
-      localStorage.removeItem('sb-dev-session')
-    } catch {
-      // ignore
-    }
-  }
 
   const fetchProfile = useCallback(
     async (userId: string, authUser?: User | null) => {
@@ -106,28 +80,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           .single()
 
         if (error || !data) {
-          // Fallback profile if database row is missing
+          // If no profile exists, fallback to basic student profile
+          // We NO LONGER check email for 'admin' string here.
           const currentU = authUser
-          const email = currentU?.email || ''
-          const isAdmin = email.toLowerCase().includes('admin') || currentU?.user_metadata?.role === 'admin'
-          const metaName = currentU?.user_metadata?.full_name
-          const fallbackName = metaName || (email ? email.split('@')[0].replace(/[._-]/g, ' ') : 'Student User')
-
           const fallbackProfile: UserProfile = {
             id: userId,
-            full_name: fallbackName,
+            full_name: currentU?.user_metadata?.full_name || 'Student User',
             mobile_number: currentU?.user_metadata?.mobile_number || null,
             profile_picture_url: currentU?.user_metadata?.avatar_url || null,
-            role: isAdmin ? 'admin' : 'student',
+            role: currentU?.user_metadata?.role === 'admin' ? 'admin' : 'student',
             status: 'active',
             program_id: currentU?.user_metadata?.program_id || 'btech',
             branch_id: currentU?.user_metadata?.branch_id || 'btech-cse',
             current_year: currentU?.user_metadata?.current_year || 1,
             current_semester: currentU?.user_metadata?.current_semester || 1,
-            program_name: 'Bachelor of Technology',
-            program_code: 'B.Tech',
-            branch_name: 'Computer Science and Engineering',
-            branch_code: 'CSE',
             created_at: currentU?.created_at || new Date().toISOString(),
             updated_at: new Date().toISOString(),
           }
@@ -148,62 +114,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setProfile(profileData)
         return profileData
       } catch (err) {
-        console.warn('fetchProfile caught exception, using fallback:', err)
+        console.warn('fetchProfile error:', err)
         return null
       }
     },
     [supabase]
   )
 
-  // Listen for auth state changes or restore dev session
   useEffect(() => {
-    // 1. Check if there's a stored dev session
-    try {
-      const storedDev = localStorage.getItem('sb-dev-session')
-      if (storedDev) {
-        const parsed = JSON.parse(storedDev)
-        if (parsed?.id && parsed?.email) {
-          const role = parsed.role || (parsed.email.toLowerCase().includes('admin') ? 'admin' : 'student')
-          setUser({
-            id: parsed.id,
-            email: parsed.email,
-            aud: 'authenticated',
-            app_metadata: {},
-            user_metadata: { full_name: parsed.full_name || 'Administrator' },
-            created_at: new Date().toISOString(),
-          } as User)
-          setProfile({
-            id: parsed.id,
-            full_name: parsed.full_name || (role === 'admin' ? 'System Administrator' : 'Student User'),
-            mobile_number: '+91 9876543210',
-            profile_picture_url: null,
-            role,
-            status: 'active',
-            program_id: 'btech',
-            branch_id: 'btech-cse',
-            current_year: 4,
-            current_semester: 8,
-            program_name: 'Bachelor of Technology',
-            program_code: 'B.Tech',
-            branch_name: 'Computer Science and Engineering',
-            branch_code: 'CSE',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          setLoading(false)
-          return
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    if (isDevMode) {
-      setLoading(false)
-      return
-    }
-
-    // 2. Real Supabase listeners
+    // Real Supabase listeners
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (_event: unknown, newSession: Session | null) => {
@@ -226,8 +145,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(initialSession?.user ?? null)
       if (initialSession?.user) {
         fetchProfile(initialSession.user.id, initialSession.user)
+      } else {
+        setLoading(false)
       }
-      setLoading(false)
     }).catch(() => {
       setLoading(false)
     })
@@ -235,103 +155,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       subscription.unsubscribe()
     }
-  }, [supabase, fetchProfile, isDevMode])
-
-  const signIn = async (email: string, password: string) => {
-    const cleanEmail = email.trim().toLowerCase()
-
-    // Local dev mode fallback when Supabase credentials are placeholder
-    if (isDevMode) {
-      const isAdmin = cleanEmail.includes('admin') || cleanEmail === 'admin@harcoutianhub.in'
-      const role: 'admin' | 'student' = isAdmin ? 'admin' : 'student'
-      const fullName = isAdmin ? 'System Administrator' : cleanEmail.split('@')[0].replace('.', ' ')
-      const devUserId = isAdmin ? 'usr-admin-system' : `usr-${Date.now()}`
-
-      const devUserObj = {
-        id: devUserId,
-        email: cleanEmail,
-        role,
-        full_name: fullName,
-      }
-
-      setDevCookie(devUserObj)
-
-      setUser({
-        id: devUserId,
-        email: cleanEmail,
-        aud: 'authenticated',
-        app_metadata: {},
-        user_metadata: { full_name: fullName },
-        created_at: new Date().toISOString(),
-      } as User)
-
-      setProfile({
-        id: devUserId,
-        full_name: fullName,
-        mobile_number: '+91 9876543210',
-        profile_picture_url: null,
-        role,
-        status: 'active',
-        program_id: 'btech',
-        branch_id: 'btech-cse',
-        current_year: 4,
-        current_semester: 8,
-        program_name: 'Bachelor of Technology',
-        program_code: 'B.Tech',
-        branch_name: 'Computer Science and Engineering',
-        branch_code: 'CSE',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-
-      showToast({
-        type: 'success',
-        message: isAdmin
-          ? 'Welcome back, Administrator! (Local Dev Mode)'
-          : `Welcome back, ${fullName}! (Local Dev Mode)`,
-      })
-      return
-    }
-
-    // Real Supabase Auth
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: cleanEmail,
-        password,
-      })
-
-      if (error) {
-        showToast({ type: 'error', message: error.message })
-        throw error
-      }
-
-      if (data?.user) {
-        const isAdmin = cleanEmail.includes('admin') || data.user.user_metadata?.role === 'admin'
-        const fullName = data.user.user_metadata?.full_name || (isAdmin ? 'System Administrator' : 'Student User')
-        setDevCookie({
-          id: data.user.id,
-          email: cleanEmail,
-          role: isAdmin ? 'admin' : 'student',
-          full_name: fullName,
-        })
-        setUser(data.user)
-      }
-
-      showToast({ type: 'success', message: 'Welcome back!' })
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      if (
-        errMsg.toLowerCase().includes('load failed') ||
-        errMsg.toLowerCase().includes('failed to fetch')
-      ) {
-        const helpful =
-          'Cannot connect to Supabase: The configured URL in NEXT_PUBLIC_SUPABASE_URL is unreachable. Please verify your Supabase project credentials in .env.local.'
-        showToast({ type: 'error', message: helpful })
-        throw new Error(helpful)
-      }
-      throw err
-    }
-  }
+  }, [supabase, fetchProfile])
 
   const signUp = async ({
     email,
@@ -354,51 +178,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     const cleanMobile = mobileCheck.normalized!
 
-    if (isDevMode) {
-      const isAdmin = cleanEmail.includes('admin')
-      const role: 'admin' | 'student' = isAdmin ? 'admin' : 'student'
-      const devUserId = `usr-${Date.now()}`
-      const devUserObj = {
-        id: devUserId,
-        email: cleanEmail,
-        role,
-        full_name: fullName.trim(),
-      }
-
-      setDevCookie(devUserObj)
-
-      setUser({
-        id: devUserId,
-        email: cleanEmail,
-        aud: 'authenticated',
-        app_metadata: {},
-        user_metadata: { full_name: fullName },
-        created_at: new Date().toISOString(),
-      } as User)
-
-      setProfile({
-        id: devUserId,
-        full_name: fullName.trim(),
-        mobile_number: cleanMobile,
-        profile_picture_url: null,
-        role,
-        status: 'active',
-        program_id: programId,
-        branch_id: branchId,
-        current_year: currentYear,
-        current_semester: currentSemester,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-
-      showToast({
-        type: 'success',
-        message: 'Account created! Logged in with Local Dev Mode.',
-      })
-      return
-    }
-
-    // Register via server API route which auto-confirms email
+    // Register via server API route which auto-confirms email and sets role strictly to student
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
@@ -421,13 +201,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error(data.error || 'Registration failed')
       }
 
-      showToast({
-        type: 'success',
-        message: 'Account created! Signing you in...',
-      })
-
-      // Automatically sign in the freshly registered user
-      await signIn(cleanEmail, password)
+      // Do NOT sign in automatically to enforce the OTP flow on manual sign-in
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : 'Registration failed'
       showToast({ type: 'error', message: errMsg })
@@ -436,16 +210,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const signOut = async () => {
-    clearDevCookie()
-
-    if (!isDevMode) {
-      try {
-        await supabase.auth.signOut()
-      } catch (error) {
-        console.warn('Sign out error:', error)
-      }
+    try {
+      await supabase.auth.signOut()
+    } catch (error) {
+      console.warn('Sign out error:', error)
     }
-
     setUser(null)
     setProfile(null)
     setSession(null)
@@ -455,7 +224,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const updateProfile = async (data: Partial<UserProfile>) => {
     if (!user) throw new Error('Not authenticated')
 
-    // If mobile_number is being updated, validate that it is present and valid
     if (data.mobile_number !== undefined) {
       const mobileCheck = validateAndNormalizeIndianMobile(data.mobile_number)
       if (!mobileCheck.valid) {
@@ -464,12 +232,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error(errMsg)
       }
       data.mobile_number = mobileCheck.normalized!
-    }
-
-    if (isDevMode) {
-      setProfile((prev) => (prev ? { ...prev, ...data, updated_at: new Date().toISOString() } : null))
-      showToast({ type: 'success', message: 'Profile updated. (Local Dev Mode)' })
-      return
     }
 
     const { error } = await supabase
@@ -491,13 +253,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const uploadAvatar = async (file: File): Promise<string> => {
     if (!user) throw new Error('Not authenticated')
-
-    if (isDevMode) {
-      const mockUrl = URL.createObjectURL(file)
-      setProfile((prev) => (prev ? { ...prev, profile_picture_url: mockUrl } : prev))
-      showToast({ type: 'success', message: 'Avatar updated. (Local Dev Mode)' })
-      return mockUrl
-    }
 
     const fileExt = file.name.split('.').pop()
     const filePath = `${user.id}/avatar.${fileExt}`
@@ -526,11 +281,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const changePassword = async (newPassword: string) => {
-    if (isDevMode) {
-      showToast({ type: 'success', message: 'Password updated. (Local Dev Mode)' })
-      return
-    }
-
     const { error } = await supabase.auth.updateUser({ password: newPassword })
     if (error) {
       showToast({ type: 'error', message: error.message })
@@ -540,14 +290,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const resetPassword = async (email: string) => {
-    if (isDevMode) {
-      showToast({
-        type: 'success',
-        message: 'Password reset simulation: In Local Dev Mode, you can sign in directly.',
-      })
-      return
-    }
-
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
       redirectTo: `${window.location.origin}/auth?type=recovery`,
     })
@@ -562,17 +304,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const refreshProfile = async () => {
-    if (user && !isDevMode) {
+    if (user) {
       await fetchProfile(user.id)
     }
   }
 
   const signInWithOAuth = async (provider: OAuthProvider) => {
-    if (isDevMode) {
-      showToast({ type: 'info', message: `OAuth (${provider}) not available in dev mode. Use email login.` })
-      return
-    }
-
     try {
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider,
@@ -596,42 +333,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  const signInWithPhone = async (phone: string) => {
-    if (isDevMode) {
-      showToast({ type: 'info', message: 'Phone OTP not available in dev mode. Use email login.' })
-      return
-    }
-
-    const { error } = await supabase.auth.signInWithOtp({ phone: phone.trim() })
-
-    if (error) {
-      showToast({ type: 'error', message: error.message })
-      throw error
-    }
-
-    showToast({ type: 'success', message: 'OTP sent to your phone number.' })
-  }
-
-  const verifyPhoneOtp = async (phone: string, token: string) => {
-    if (isDevMode) {
-      showToast({ type: 'info', message: 'Phone OTP verification not available in dev mode.' })
-      return
-    }
-
-    const { error } = await supabase.auth.verifyOtp({
-      phone: phone.trim(),
-      token: token.trim(),
-      type: 'sms',
-    })
-
-    if (error) {
-      showToast({ type: 'error', message: error.message })
-      throw error
-    }
-
-    showToast({ type: 'success', message: 'Phone verified. Welcome!' })
-  }
-
   return (
     <AuthContext.Provider
       value={{
@@ -639,11 +340,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         profile,
         session,
         loading,
-        isDevMode,
-        signIn,
         signInWithOAuth,
-        signInWithPhone,
-        verifyPhoneOtp,
         signUp,
         signOut,
         updateProfile,

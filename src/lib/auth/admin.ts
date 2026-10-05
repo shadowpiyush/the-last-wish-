@@ -47,14 +47,9 @@ export async function getAuthUser(request?: Request): Promise<AuthUserInfo | nul
         }
       }
 
-      // Check metadata and email fallback as implemented in existing AuthProvider
-      if (role !== 'admin') {
-        if (
-          user.user_metadata?.role === 'admin' ||
-          user.email?.toLowerCase().includes('admin')
-        ) {
-          role = 'admin'
-        }
+      // Check metadata fallback
+      if (role !== 'admin' && user.user_metadata?.role === 'admin') {
+        role = 'admin'
       }
 
       return {
@@ -62,27 +57,6 @@ export async function getAuthUser(request?: Request): Promise<AuthUserInfo | nul
         email: user.email || '',
         role,
         fullName,
-      }
-    }
-
-    // Dev session cookie fallback if used in local development
-    if (request && typeof request.headers?.get === 'function') {
-      const cookieHeader = request.headers.get('cookie') || ''
-      const devMatch = cookieHeader.match(/sb-dev-session=([^;]+)/)
-      if (devMatch && devMatch[1]) {
-        try {
-          const parsed = JSON.parse(decodeURIComponent(devMatch[1]))
-          if (parsed && parsed.id) {
-            return {
-              id: parsed.id,
-              email: parsed.email || 'admin@harcoutianhub.in',
-              role: parsed.role || (parsed.email?.toLowerCase().includes('admin') ? 'admin' : 'student'),
-              fullName: parsed.full_name || 'Administrator',
-            }
-          }
-        } catch {
-          // ignore parse error
-        }
       }
     }
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, Suspense, useRef } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import {
@@ -12,11 +12,12 @@ import {
   User,
   Phone,
   ArrowRight,
+  ArrowLeft,
   AlertCircle,
+  CheckCircle2,
   Loader2,
-  Sparkles,
-  Shield,
   GraduationCap,
+  KeyRound,
 } from 'lucide-react'
 import { useAuth } from '@/components/providers/AuthProvider'
 import { createClient } from '@/lib/supabase/client'
@@ -37,24 +38,31 @@ interface BranchItem {
   code: string
 }
 
-type AuthTab = 'login' | 'register' | 'forgot'
+type AuthStep = 'credentials' | 'otp' | 'register' | 'forgot'
 
 function AuthPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { user, profile, signIn, signInWithOAuth, signUp, resetPassword, loading: authLoading, isDevMode } = useAuth()
+  const { user, profile, signInWithOAuth, signUp, resetPassword, loading: authLoading } = useAuth()
 
-  const [tab, setTab] = useState<AuthTab>('login')
+  const [step, setStep] = useState<AuthStep>('credentials')
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [redirecting, setRedirecting] = useState(false)
   const [error, setError] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
 
-  const [canAutoRegister, setCanAutoRegister] = useState(false)
+  // Login form — initially empty, no prefilled credentials
+  const [loginEmail, setLoginEmail] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
 
-  // Login form - prefilled with verified test credentials for immediate sign-in
-  const [loginEmail, setLoginEmail] = useState('admin@harcoutianhub.in')
-  const [loginPassword, setLoginPassword] = useState('Admin@Harcoutian2026')
+  // OTP state
+  const [challengeId, setChallengeId] = useState('')
+  const [maskedEmail, setMaskedEmail] = useState('')
+  const [otpCode, setOtpCode] = useState('')
+  const [remainingAttempts, setRemainingAttempts] = useState<number | null>(null)
+  const [resendCooldown, setResendCooldown] = useState(0)
+  const otpInputRef = useRef<HTMLInputElement>(null)
 
   // Register form
   const [regEmail, setRegEmail] = useState('')
@@ -74,17 +82,13 @@ function AuthPageInner() {
   const [forgotEmail, setForgotEmail] = useState('')
   const [forgotSent, setForgotSent] = useState(false)
 
-  // Inspect URL parameters and window hash for OAuth callback errors
+  // Handle OAuth callback errors from URL
   useEffect(() => {
     const errParam = searchParams.get('error')
     const errDesc = searchParams.get('error_description')
     if (errDesc || errParam) {
       const decoded = decodeURIComponent(errDesc || errParam || '')
-      if (decoded.toLowerCase().includes('not enabled') || decoded.toLowerCase().includes('unsupported provider')) {
-        setError('Social sign-in is not enabled yet in your Supabase project (Authentication → Providers). Please sign in using your Email & Password or the 1-click Admin button below.')
-      } else {
-        setError(decoded)
-      }
+      setError(decoded)
     }
 
     if (typeof window !== 'undefined' && window.location.hash) {
@@ -92,18 +96,13 @@ function AuthPageInner() {
       const hashParams = new URLSearchParams(hash)
       const hashErr = hashParams.get('error_description') || hashParams.get('error')
       if (hashErr) {
-        const decoded = decodeURIComponent(hashErr)
-        if (decoded.toLowerCase().includes('not enabled') || decoded.toLowerCase().includes('unsupported provider')) {
-          setError('Social sign-in is not enabled yet in your Supabase project (Authentication → Providers). Please sign in using your Email & Password or the 1-click Admin button below.')
-        } else {
-          setError(decoded)
-        }
+        setError(decodeURIComponent(hashErr))
         window.history.replaceState(null, '', window.location.pathname + window.location.search)
       }
     }
   }, [searchParams])
 
-  // Redirect authenticated users
+  // Redirect already-authenticated users
   useEffect(() => {
     if (user && !authLoading) {
       setRedirecting(true)
@@ -113,7 +112,7 @@ function AuthPageInner() {
     }
   }, [user, profile, authLoading, searchParams])
 
-  // Fetch live programs and branches from Supabase
+  // Fetch programs and branches for registration
   useEffect(() => {
     const supabase = createClient()
     async function loadProgramsAndBranches() {
@@ -148,6 +147,14 @@ function AuthPageInner() {
     loadProgramsAndBranches()
   }, [])
 
+  // Resend cooldown timer
+  useEffect(() => {
+    if (resendCooldown > 0) {
+      const timer = setTimeout(() => setResendCooldown((c) => c - 1), 1000)
+      return () => clearTimeout(timer)
+    }
+  }, [resendCooldown])
+
   const handleProgramSelect = (progId: string) => {
     setRegProgramId(progId)
     const matching = branchesList.filter((b) => b.program_id === progId)
@@ -164,140 +171,146 @@ function AuthPageInner() {
   const maxYears = selectedProgramObj?.duration_years || 4
   const availableBranches = branchesList.filter((b) => b.program_id === regProgramId)
 
-  const handleOAuth = async (provider: 'google' | 'github' | 'apple') => {
+  // ==================== HANDLERS ====================
+
+  const handleSignIn = async (e: React.FormEvent) => {
+    e.preventDefault()
     setError('')
-    setCanAutoRegister(false)
+    setSuccessMessage('')
+
+    const email = loginEmail.trim()
+    const password = loginPassword.trim()
+
+    if (!email) { setError('Please enter your email address.'); return }
+    if (!password) { setError('Please enter your password.'); return }
+
     setLoading(true)
     try {
-      await signInWithOAuth(provider)
+      const res = await fetch('/api/auth/login/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error || 'Sign in failed.')
+        setLoading(false)
+        return
+      }
+
+      // Switch to OTP step
+      setChallengeId(data.challengeId)
+      setMaskedEmail(data.maskedEmail)
+      setOtpCode('')
+      setRemainingAttempts(null)
+      setResendCooldown(30)
+      setStep('otp')
+      setTimeout(() => otpInputRef.current?.focus(), 150)
+    } catch {
+      setError('Network error. Please check your connection and try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleVerifyOTP = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+
+    const code = otpCode.trim()
+    if (!code || code.length !== 6) {
+      setError('Please enter the 6-digit verification code.')
+      return
+    }
+
+    setLoading(true)
+    try {
+      const res = await fetch('/api/auth/otp/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challengeId, otp: code }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        if (data.remainingAttempts !== undefined) {
+          setRemainingAttempts(data.remainingAttempts)
+        }
+        setError(data.error || 'Verification failed.')
+        setOtpCode('')
+        setLoading(false)
+        setTimeout(() => otpInputRef.current?.focus(), 100)
+        return
+      }
+
+      // Session cookies set by server, redirect now
+      setRedirecting(true)
+      const explicitRedirect = searchParams.get('redirect')
+      window.location.href = explicitRedirect || data.redirectTo || '/dashboard'
+    } catch {
+      setError('Network error. Please try again.')
+      setLoading(false)
+    }
+  }
+
+  const handleResendOTP = async () => {
+    if (resendCooldown > 0 || loading) return
+    setError('')
+    setSuccessMessage('')
+    setLoading(true)
+
+    try {
+      const res = await fetch('/api/auth/otp/resend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ challengeId }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.error || 'Failed to resend code.')
+        setLoading(false)
+        return
+      }
+
+      setChallengeId(data.challengeId)
+      setOtpCode('')
+      setRemainingAttempts(null)
+      setResendCooldown(60)
+      setSuccessMessage('A new verification code has been sent to your email.')
+      setTimeout(() => otpInputRef.current?.focus(), 100)
+    } catch {
+      setError('Network error. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleOAuth = async () => {
+    setError('')
+    setLoading(true)
+    try {
+      await signInWithOAuth('google')
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Social sign-in failed'
+      const message = err instanceof Error ? err.message : 'Sign-in failed'
       setError(message)
     } finally {
       setLoading(false)
     }
   }
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError('')
-    setCanAutoRegister(false)
-
-    const email = loginEmail.trim()
-    const password = loginPassword.trim()
-
-    if (!email) {
-      setError('Please enter your email address.')
-      return
-    }
-    if (!password) {
-      setError('Please enter your password.')
-      return
-    }
-
-    setLoading(true)
-    try {
-      await signIn(email, password)
-      setRedirecting(true)
-      const explicitRedirect = searchParams.get('redirect')
-      const target = explicitRedirect || (email.toLowerCase().includes('admin') ? '/admin' : '/dashboard')
-      // Full browser navigation ensures all auth cookies are cleanly transferred
-      window.location.href = target
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Login failed'
-      if (message.toLowerCase().includes('invalid login credentials')) {
-        setError('Invalid credentials. If this email is not registered yet, click below to activate it as Admin immediately.')
-        setCanAutoRegister(true)
-      } else if (message.toLowerCase().includes('load failed') || message.toLowerCase().includes('failed to fetch')) {
-        setError('Network error: Unable to connect to Supabase. Please check your network connection or verify your Supabase project in .env.local.')
-        setCanAutoRegister(false)
-      } else {
-        setError(message)
-        setCanAutoRegister(false)
-      }
-      setLoading(false)
-      setRedirecting(false)
-    }
-  }
-
-  const handleAutoRegisterAdmin = async () => {
-    setError('')
-    setLoading(true)
-    try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: loginEmail.trim().toLowerCase(),
-          password: loginPassword,
-          fullName: 'System Administrator',
-          mobileNumber: '+919876543210',
-          programId: 'btech',
-          branchId: 'btech-cse',
-          currentYear: 4,
-          currentSemester: 8,
-        }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to register account')
-      }
-      // Now sign in immediately
-      await signIn(loginEmail.trim().toLowerCase(), loginPassword)
-      setRedirecting(true)
-      window.location.href = '/admin'
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Auto-registration failed')
-      setLoading(false)
-    }
-  }
-
-  const handleQuickLogin = async (role: 'admin' | 'student') => {
-    setError('')
-    setCanAutoRegister(false)
-    setLoading(true)
-    try {
-      const email = role === 'admin' ? 'admin@harcoutianhub.in' : 'student@harcoutianhub.in'
-      const pwd = role === 'admin' ? 'Admin@Harcoutian2026' : 'Student@2026'
-      setLoginEmail(email)
-      setLoginPassword(pwd)
-      await signIn(email, pwd)
-      setRedirecting(true)
-      const explicitRedirect = searchParams.get('redirect')
-      const target = explicitRedirect || (role === 'admin' ? '/admin' : '/dashboard')
-      window.location.href = target
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Login failed'
-      setError(message)
-      setLoading(false)
-      setRedirecting(false)
-    }
-  }
-
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
+    setSuccessMessage('')
 
-    if (!regName.trim()) {
-      setError('Full name is required.')
-      return
-    }
-    if (!regEmail.trim()) {
-      setError('Email address is required.')
-      return
-    }
+    if (!regName.trim()) { setError('Full name is required.'); return }
+    if (!regEmail.trim()) { setError('Email address is required.'); return }
 
-    // Mandatory Indian mobile validation
     const mobileCheck = validateAndNormalizeIndianMobile(regMobile)
-    if (!mobileCheck.valid) {
-      setError(mobileCheck.error || 'Mobile number is required.')
-      return
-    }
-
-    if (regPassword.length < 8) {
-      setError('Password must be at least 8 characters.')
-      return
-    }
+    if (!mobileCheck.valid) { setError(mobileCheck.error || 'Mobile number is required.'); return }
+    if (regPassword.length < 8) { setError('Password must be at least 8 characters.'); return }
 
     setLoading(true)
     try {
@@ -311,7 +324,10 @@ function AuthPageInner() {
         currentYear: regYear,
         currentSemester: regSemester,
       })
-      setTab('login')
+      setSuccessMessage('Account created successfully! Please sign in with your credentials.')
+      setLoginEmail(regEmail)
+      setLoginPassword('')
+      setStep('credentials')
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Registration failed'
       setError(message)
@@ -335,47 +351,29 @@ function AuthPageInner() {
     }
   }
 
+  const handleBackToCredentials = () => {
+    setStep('credentials')
+    setError('')
+    setSuccessMessage('')
+    setOtpCode('')
+    setChallengeId('')
+    setRemainingAttempts(null)
+  }
+
+  // ==================== LOADING / REDIRECT STATE ====================
+
   if (authLoading || redirecting) {
     return (
-      <div style={{
-        minHeight: '100vh',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--bg-primary)',
-        padding: '2rem',
-        textAlign: 'center',
-      }}>
-        <div className="glass-card" style={{
-          padding: '2.5rem 2rem',
-          borderRadius: 'var(--radius-xl)',
-          maxWidth: 420,
-          width: '100%',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: '1.25rem',
-          boxShadow: 'var(--shadow-xl)',
-        }}>
-          <div style={{
-            width: 52,
-            height: 52,
-            borderRadius: '50%',
-            background: 'linear-gradient(135deg, #4f46e5, #06b6d4)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: '#fff',
-            boxShadow: '0 4px 16px rgba(79, 70, 229, 0.4)',
-          }}>
+      <div className="auth-page-wrapper">
+        <div className="glass-card auth-loading-card">
+          <div className="auth-loading-icon">
             <Loader2 size={28} className="animate-spin" />
           </div>
           <div>
-            <h2 style={{ fontSize: '1.25rem', fontWeight: 800, fontFamily: 'var(--font-display)', marginBottom: 6 }}>
+            <h2 className="auth-loading-title">
               Welcome to <span className="text-gradient">Harcoutian Hub</span>
             </h2>
-            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+            <p className="auth-loading-subtitle">
               {redirecting ? 'Academic session confirmed! Opening your portal...' : 'Checking session...'}
             </p>
           </div>
@@ -384,48 +382,22 @@ function AuthPageInner() {
     )
   }
 
-  return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: 'var(--bg-primary)',
-      padding: '2rem',
-      position: 'relative',
-      overflow: 'hidden',
-    }}>
-      {/* Ambient glow */}
-      <div style={{
-        position: 'absolute',
-        top: '20%',
-        left: '50%',
-        transform: 'translateX(-50%)',
-        width: 600,
-        height: 400,
-        background: 'radial-gradient(ellipse, rgba(79, 70, 229, 0.12), transparent 70%)',
-        pointerEvents: 'none',
-      }} />
+  // ==================== MAIN RENDER ====================
 
-      <div style={{
-        maxWidth: 440,
-        width: '100%',
-        position: 'relative',
-        zIndex: 1,
-      }}>
+  return (
+    <div className="auth-page-wrapper">
+      {/* Ambient glow */}
+      <div className="auth-ambient-glow" />
+
+      <div className="auth-container">
         {/* Brand header */}
         <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
-          <Link href="/" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.625rem', marginBottom: '1rem', textDecoration: 'none' }}>
+          <Link href="/" className="auth-brand-link">
             <div className="brand-badge-icon" style={{
-              width: 40,
-              height: 40,
-              borderRadius: 'var(--radius-md)',
+              width: 40, height: 40, borderRadius: 'var(--radius-md)',
               background: 'linear-gradient(135deg, #4f46e5 0%, #3b82f6 50%, #06b6d4 100%)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#fff',
-              boxShadow: '0 4px 14px rgba(79, 70, 229, 0.35)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#fff', boxShadow: '0 4px 14px rgba(79, 70, 229, 0.35)',
             }}>
               <BookOpen size={20} />
             </div>
@@ -439,183 +411,86 @@ function AuthPageInner() {
               </div>
             </div>
           </Link>
+
           <h1 style={{
-            fontSize: '1.5rem',
-            fontWeight: 800,
-            fontFamily: 'var(--font-display)',
+            fontSize: '1.5rem', fontWeight: 800, fontFamily: 'var(--font-display)',
           }}>
-            Welcome to <span className="text-gradient">Harcoutian Hub</span>
+            {step === 'otp' ? (
+              <>Verify Your <span className="text-gradient">Identity</span></>
+            ) : (
+              <>Welcome to <span className="text-gradient">Harcoutian Hub</span></>
+            )}
           </h1>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginTop: '0.25rem' }}>
-            {tab === 'login' && 'Sign in to access your academic portal'}
-            {tab === 'register' && 'Create your student account'}
-            {tab === 'forgot' && 'Reset your password'}
+            {step === 'credentials' && 'Sign in to access your academic portal'}
+            {step === 'otp' && `Enter the verification code sent to ${maskedEmail}`}
+            {step === 'register' && 'Create your student account'}
+            {step === 'forgot' && 'Reset your password'}
           </p>
         </div>
 
-        {/* Quick Demo Access Box */}
-        <div style={{
-          marginBottom: '1rem',
-          padding: '0.875rem 1rem',
-          borderRadius: 'var(--radius-lg)',
-          background: 'rgba(79, 70, 229, 0.08)',
-          border: '1px solid rgba(79, 70, 229, 0.22)',
-          fontSize: '0.8125rem',
-          color: 'var(--text-secondary)',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontWeight: 700, color: 'var(--color-accent)', marginBottom: '0.25rem' }}>
-            <Sparkles size={14} /> Quick Demo Access
-          </div>
-          <div style={{ fontSize: '0.75rem', lineHeight: 1.4, color: 'var(--text-secondary)', marginBottom: '0.625rem' }}>
-            One-click test accounts with pre-verified academic access:
-          </div>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button
-              type="button"
-              onClick={() => handleQuickLogin('admin')}
-              disabled={loading}
-              className="btn btn-secondary"
-              style={{
-                flex: 1,
-                fontSize: '0.75rem',
-                padding: '0.45rem 0.6rem',
-                justifyContent: 'center',
-                background: 'rgba(79, 70, 229, 0.15)',
-                borderColor: 'rgba(79, 70, 229, 0.4)',
-                color: 'var(--color-accent-light)',
-                fontWeight: 600,
-              }}
-            >
-              <Shield size={13} style={{ marginRight: 4 }} /> Admin Login
-            </button>
-            <button
-              type="button"
-              onClick={() => handleQuickLogin('student')}
-              disabled={loading}
-              className="btn btn-secondary"
-              style={{
-                flex: 1,
-                fontSize: '0.75rem',
-                padding: '0.45rem 0.6rem',
-                justifyContent: 'center',
-                fontWeight: 600,
-              }}
-            >
-              <GraduationCap size={13} style={{ marginRight: 4 }} /> Student Login
-            </button>
-          </div>
-        </div>
-
         {/* Auth card */}
-        <div className="glass-card" style={{
-          padding: '2rem',
-          borderRadius: 'var(--radius-xl)',
-          boxShadow: 'var(--shadow-lg)',
-        }}>
-          {/* Tab switcher (login vs register) */}
-          {tab !== 'forgot' && (
-            <div style={{
-              display: 'flex',
-              gap: '0.25rem',
-              marginBottom: '1.5rem',
-              padding: '0.25rem',
-              background: 'var(--bg-secondary)',
-              borderRadius: 'var(--radius-full)',
-            }}>
-              {(['login', 'register'] as const).map((t) => (
+        <div className="glass-card auth-card">
+          {/* Tab switcher (credentials vs register) — NOT shown for OTP or forgot */}
+          {(step === 'credentials' || step === 'register') && (
+            <div className="auth-tab-bar">
+              {(['credentials', 'register'] as const).map((t) => (
                 <button
                   key={t}
-                  onClick={() => { setTab(t); setError('') }}
-                  style={{
-                    flex: 1,
-                    padding: '0.5rem',
-                    borderRadius: 'var(--radius-full)',
-                    fontSize: '0.8125rem',
-                    fontWeight: 600,
-                    background: tab === t ? 'var(--bg-card)' : 'transparent',
-                    color: tab === t ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                    boxShadow: tab === t ? 'var(--shadow-sm)' : 'none',
-                    transition: 'all 200ms ease',
-                    border: 'none',
-                    cursor: 'pointer',
-                  }}
+                  onClick={() => { setStep(t); setError(''); setSuccessMessage('') }}
+                  className={`auth-tab ${step === t ? 'auth-tab-active' : ''}`}
+                  type="button"
                 >
-                  {t === 'login' ? 'Sign In' : 'Register'}
+                  {t === 'credentials' ? 'Sign In' : 'Register'}
                 </button>
               ))}
             </div>
           )}
 
-          {/* Error */}
-          {error && (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.5rem',
-              padding: '0.75rem 1rem',
-              borderRadius: 'var(--radius-sm)',
-              background: 'var(--color-danger-bg)',
-              color: 'var(--color-danger)',
-              fontSize: '0.8125rem',
-              fontWeight: 500,
-              marginBottom: '1rem',
-              lineHeight: 1.4,
-            }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem' }}>
-                <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
-                <div>{error}</div>
-              </div>
-              {canAutoRegister && (
-                <button
-                  type="button"
-                  onClick={handleAutoRegisterAdmin}
-                  disabled={loading}
-                  className="btn btn-secondary"
-                  style={{
-                    width: '100%',
-                    fontSize: '0.75rem',
-                    padding: '0.5rem 0.75rem',
-                    fontWeight: 700,
-                    background: 'rgba(79, 70, 229, 0.25)',
-                    borderColor: 'rgba(79, 70, 229, 0.6)',
-                    color: '#fff',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 6,
-                    marginTop: 4,
-                  }}
-                >
-                  <Shield size={14} /> Register & Sign In as Admin with this Email
-                </button>
-              )}
+          {/* Success message */}
+          {successMessage && (
+            <div className="auth-success-banner" role="status">
+              <CheckCircle2 size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span>{successMessage}</span>
             </div>
           )}
 
-          {/* Login form */}
-          {tab === 'login' && (
-            <form onSubmit={handleLogin}>
+          {/* Error message */}
+          {error && (
+            <div className="auth-error-banner" role="alert">
+              <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span>{error}</span>
+            </div>
+          )}
+
+          {/* ==================== CREDENTIALS STEP ==================== */}
+          {step === 'credentials' && (
+            <form onSubmit={handleSignIn} noValidate>
               <div className="form-group">
-                <label className="form-label">Email Address</label>
+                <label className="form-label" htmlFor="login-email">Email Address</label>
                 <div style={{ position: 'relative' }}>
                   <Mail size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                   <input
+                    id="login-email"
                     type="email"
                     className="form-input"
                     style={{ paddingLeft: 38 }}
-                    placeholder="admin@harcoutianhub.in"
+                    placeholder="you@example.com"
                     value={loginEmail}
                     onChange={(e) => setLoginEmail(e.target.value)}
                     required
                     autoComplete="email"
+                    autoFocus
                   />
                 </div>
               </div>
+
               <div className="form-group">
-                <label className="form-label">Password</label>
+                <label className="form-label" htmlFor="login-password">Password</label>
                 <div style={{ position: 'relative' }}>
                   <Lock size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                   <input
+                    id="login-password"
                     type={showPassword ? 'text' : 'password'}
                     className="form-input"
                     style={{ paddingLeft: 38, paddingRight: 40 }}
@@ -629,7 +504,7 @@ function AuthPageInner() {
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)', background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
-                    aria-label="Toggle password visibility"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
                   >
                     {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
@@ -638,7 +513,7 @@ function AuthPageInner() {
 
               <button
                 type="button"
-                onClick={() => { setTab('forgot'); setError('') }}
+                onClick={() => { setStep('forgot'); setError(''); setSuccessMessage('') }}
                 style={{ fontSize: '0.75rem', color: 'var(--color-accent)', fontWeight: 600, marginBottom: '1rem', display: 'block', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
               >
                 Forgot password?
@@ -646,110 +521,161 @@ function AuthPageInner() {
 
               <button
                 type="submit"
-                className="btn btn-primary"
-                disabled={loading || redirecting}
-                style={{
-                  width: '100%',
-                  padding: '0.7rem',
-                  fontSize: '0.875rem',
-                  fontWeight: 700,
-                  borderRadius: 'var(--radius-md)',
-                  gap: '0.5rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
+                className="btn btn-primary auth-submit-btn"
+                disabled={loading}
               >
-                {loading || redirecting ? (
-                  <>
-                    <Loader2 size={18} className="animate-spin" />
-                    <span>Signing in & opening...</span>
-                  </>
+                {loading ? (
+                  <><Loader2 size={18} className="animate-spin" /><span>Verifying credentials...</span></>
                 ) : (
                   <>Sign In <ArrowRight size={16} /></>
                 )}
               </button>
 
               {/* OAuth Divider */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.75rem',
-                margin: '1.25rem 0',
-              }}>
-                <div style={{ flex: 1, height: 1, background: 'var(--border-light)' }} />
-                <span style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>or continue with</span>
-                <div style={{ flex: 1, height: 1, background: 'var(--border-light)' }} />
+              <div className="auth-divider">
+                <div className="auth-divider-line" />
+                <span className="auth-divider-text">or continue with</span>
+                <div className="auth-divider-line" />
               </div>
 
-              {/* OAuth Buttons */}
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button
-                  type="button"
-                  onClick={() => handleOAuth('google')}
-                  disabled={loading}
-                  className="btn btn-secondary"
-                  style={{ flex: 1, padding: '0.6rem', fontSize: '0.75rem', fontWeight: 600, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 6 }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                    <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
-                    <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                    <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-                    <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                  </svg>
-                  Google
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleOAuth('github')}
-                  disabled={loading}
-                  className="btn btn-secondary"
-                  style={{ flex: 1, padding: '0.6rem', fontSize: '0.75rem', fontWeight: 600, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 6 }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
-                  </svg>
-                  GitHub
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleOAuth('apple')}
-                  disabled={loading}
-                  className="btn btn-secondary"
-                  style={{ flex: 1, padding: '0.6rem', fontSize: '0.75rem', fontWeight: 600, justifyContent: 'center', display: 'flex', alignItems: 'center', gap: 6 }}
-                >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/>
-                  </svg>
-                  Apple
-                </button>
-              </div>
+              {/* Google OAuth — single unified button */}
+              <button
+                type="button"
+                onClick={handleOAuth}
+                disabled={loading}
+                className="btn btn-secondary auth-oauth-btn"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                </svg>
+                Continue with Google
+              </button>
             </form>
           )}
 
-          {/* Register form */}
-          {tab === 'register' && (
-            <form onSubmit={handleRegister}>
+          {/* ==================== OTP STEP ==================== */}
+          {step === 'otp' && (
+            <form onSubmit={handleVerifyOTP} noValidate>
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                margin: '0.5rem 0 1.25rem',
+              }}>
+                <div style={{
+                  width: 56, height: 56, borderRadius: '50%',
+                  background: 'linear-gradient(135deg, rgba(79, 70, 229, 0.12), rgba(6, 182, 212, 0.12))',
+                  border: '1px solid rgba(79, 70, 229, 0.2)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: 'var(--color-accent)',
+                }}>
+                  <KeyRound size={26} />
+                </div>
+              </div>
+
               <div className="form-group">
-                <label className="form-label">Full Name</label>
+                <label className="form-label" htmlFor="otp-input" style={{ textAlign: 'center', display: 'block' }}>
+                  Verification Code
+                </label>
+                <input
+                  ref={otpInputRef}
+                  id="otp-input"
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  className="form-input"
+                  style={{
+                    textAlign: 'center', fontSize: '1.5rem', fontWeight: 700,
+                    letterSpacing: '0.5em', fontFamily: 'var(--font-mono)',
+                    padding: '0.875rem',
+                  }}
+                  placeholder="000000"
+                  value={otpCode}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '').slice(0, 6)
+                    setOtpCode(val)
+                  }}
+                  maxLength={6}
+                  required
+                />
+                {remainingAttempts !== null && remainingAttempts <= 3 && (
+                  <p className="form-error" style={{ textAlign: 'center', marginTop: '0.5rem' }}>
+                    {remainingAttempts === 0
+                      ? 'No attempts remaining'
+                      : `${remainingAttempts} attempt${remainingAttempts === 1 ? '' : 's'} remaining`}
+                  </p>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                className="btn btn-primary auth-submit-btn"
+                disabled={loading || otpCode.length !== 6}
+              >
+                {loading ? (
+                  <><Loader2 size={18} className="animate-spin" /><span>Verifying...</span></>
+                ) : (
+                  <>Verify & Sign In <ArrowRight size={16} /></>
+                )}
+              </button>
+
+              <div style={{ textAlign: 'center', marginTop: '1rem' }}>
+                <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginBottom: '0.5rem' }}>
+                  Didn&apos;t receive the code?
+                </p>
+                <button
+                  type="button"
+                  onClick={handleResendOTP}
+                  disabled={resendCooldown > 0 || loading}
+                  style={{
+                    fontSize: '0.8125rem', fontWeight: 600,
+                    color: resendCooldown > 0 ? 'var(--text-quaternary)' : 'var(--color-accent)',
+                    background: 'none', border: 'none', cursor: resendCooldown > 0 ? 'default' : 'pointer',
+                    padding: 0,
+                  }}
+                >
+                  {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend Code'}
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleBackToCredentials}
+                className="auth-back-btn"
+              >
+                <ArrowLeft size={14} /> Back to Sign In
+              </button>
+            </form>
+          )}
+
+          {/* ==================== REGISTER FORM ==================== */}
+          {step === 'register' && (
+            <form onSubmit={handleRegister} noValidate>
+              <div className="form-group">
+                <label className="form-label" htmlFor="reg-name">Full Name</label>
                 <div style={{ position: 'relative' }}>
                   <User size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                   <input
+                    id="reg-name"
                     type="text"
                     className="form-input"
                     style={{ paddingLeft: 38 }}
-                    placeholder="Arvind Rajput"
+                    placeholder="Your full name"
                     value={regName}
                     onChange={(e) => setRegName(e.target.value)}
                     required
+                    autoComplete="name"
                   />
                 </div>
               </div>
+
               <div className="form-group">
-                <label className="form-label">Email Address</label>
+                <label className="form-label" htmlFor="reg-email">Email Address</label>
                 <div style={{ position: 'relative' }}>
                   <Mail size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                   <input
+                    id="reg-email"
                     type="email"
                     className="form-input"
                     style={{ paddingLeft: 38 }}
@@ -761,16 +687,16 @@ function AuthPageInner() {
                   />
                 </div>
               </div>
+
               <div className="form-group">
-                <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span>
-                    Mobile Number <span style={{ color: '#ef4444' }}>*</span>
-                  </span>
+                <label className="form-label" htmlFor="reg-mobile" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Mobile Number <span style={{ color: '#ef4444' }}>*</span></span>
                   <span style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>10-digit Indian Mobile</span>
                 </label>
                 <div style={{ position: 'relative' }}>
                   <Phone size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                   <input
+                    id="reg-mobile"
                     type="tel"
                     className="form-input"
                     style={{ paddingLeft: 38 }}
@@ -781,11 +707,13 @@ function AuthPageInner() {
                   />
                 </div>
               </div>
+
               <div className="form-group">
-                <label className="form-label">Password</label>
+                <label className="form-label" htmlFor="reg-password">Password</label>
                 <div style={{ position: 'relative' }}>
                   <Lock size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                   <input
+                    id="reg-password"
                     type={showPassword ? 'text' : 'password'}
                     className="form-input"
                     style={{ paddingLeft: 38, paddingRight: 40 }}
@@ -800,7 +728,7 @@ function AuthPageInner() {
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)', background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
-                    aria-label="Toggle password visibility"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
                   >
                     {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
@@ -809,27 +737,21 @@ function AuthPageInner() {
 
               {/* Academic Course & Branch Selection */}
               <div style={{
-                margin: '1.25rem 0',
-                padding: '1rem',
-                borderRadius: 'var(--radius-lg)',
-                background: 'rgba(79, 70, 229, 0.06)',
-                border: '1px solid rgba(79, 70, 229, 0.2)',
+                margin: '1.25rem 0', padding: '1rem', borderRadius: 'var(--radius-lg)',
+                background: 'rgba(79, 70, 229, 0.06)', border: '1px solid rgba(79, 70, 229, 0.2)',
               }}>
                 <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: '0.8125rem',
-                  fontWeight: 700,
-                  color: 'var(--color-accent)',
-                  marginBottom: '0.75rem',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  fontSize: '0.8125rem', fontWeight: 700,
+                  color: 'var(--color-accent)', marginBottom: '0.75rem',
                 }}>
                   <GraduationCap size={16} /> Academic Course & Branch
                 </div>
 
                 <div className="form-group" style={{ marginBottom: '0.75rem' }}>
-                  <label className="form-label" style={{ fontSize: '0.75rem' }}>Degree Program</label>
+                  <label className="form-label" htmlFor="reg-program" style={{ fontSize: '0.75rem' }}>Degree Program</label>
                   <select
+                    id="reg-program"
                     className="form-select"
                     value={regProgramId}
                     onChange={(e) => handleProgramSelect(e.target.value)}
@@ -844,8 +766,9 @@ function AuthPageInner() {
                 </div>
 
                 <div className="form-group" style={{ marginBottom: '0.75rem' }}>
-                  <label className="form-label" style={{ fontSize: '0.75rem' }}>Branch / Specialization</label>
+                  <label className="form-label" htmlFor="reg-branch" style={{ fontSize: '0.75rem' }}>Branch / Specialization</label>
                   <select
+                    id="reg-branch"
                     className="form-select"
                     value={regBranchId}
                     onChange={(e) => setRegBranchId(e.target.value)}
@@ -861,8 +784,9 @@ function AuthPageInner() {
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                   <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ fontSize: '0.75rem' }}>Year</label>
+                    <label className="form-label" htmlFor="reg-year" style={{ fontSize: '0.75rem' }}>Year</label>
                     <select
+                      id="reg-year"
                       className="form-select"
                       value={regYear}
                       onChange={(e) => {
@@ -873,16 +797,15 @@ function AuthPageInner() {
                       style={{ fontSize: '0.8125rem', padding: '0.5rem 0.75rem' }}
                     >
                       {Array.from({ length: maxYears }, (_, i) => i + 1).map((yr) => (
-                        <option key={yr} value={yr}>
-                          Year {yr}
-                        </option>
+                        <option key={yr} value={yr}>Year {yr}</option>
                       ))}
                     </select>
                   </div>
 
                   <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ fontSize: '0.75rem' }}>Semester</label>
+                    <label className="form-label" htmlFor="reg-semester" style={{ fontSize: '0.75rem' }}>Semester</label>
                     <select
+                      id="reg-semester"
                       className="form-select"
                       value={regSemester}
                       onChange={(e) => setRegSemester(Number(e.target.value))}
@@ -897,40 +820,24 @@ function AuthPageInner() {
 
               <button
                 type="submit"
-                className="btn btn-primary"
+                className="btn btn-primary auth-submit-btn"
                 disabled={loading}
-                style={{
-                  width: '100%',
-                  padding: '0.7rem',
-                  fontSize: '0.875rem',
-                  fontWeight: 700,
-                  borderRadius: 'var(--radius-md)',
-                  gap: '0.5rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginTop: '0.5rem',
-                }}
+                style={{ marginTop: '0.5rem' }}
               >
                 {loading ? <Loader2 size={18} className="animate-spin" /> : <>Create Account <ArrowRight size={16} /></>}
               </button>
             </form>
           )}
 
-          {/* Forgot password */}
-          {tab === 'forgot' && (
-            <form onSubmit={handleForgot}>
+          {/* ==================== FORGOT PASSWORD ==================== */}
+          {step === 'forgot' && (
+            <form onSubmit={handleForgot} noValidate>
               {forgotSent ? (
                 <div style={{ textAlign: 'center', padding: '1rem 0' }}>
                   <div style={{
-                    width: 48,
-                    height: 48,
-                    borderRadius: '50%',
-                    background: 'var(--color-success-bg)',
-                    color: 'var(--color-success)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
+                    width: 48, height: 48, borderRadius: '50%',
+                    background: 'var(--color-success-bg)', color: 'var(--color-success)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
                     margin: '0 auto 1rem',
                   }}>
                     <Mail size={22} />
@@ -941,7 +848,7 @@ function AuthPageInner() {
                   </p>
                   <button
                     type="button"
-                    onClick={() => { setTab('login'); setForgotSent(false); setError('') }}
+                    onClick={() => { setStep('credentials'); setForgotSent(false); setError('') }}
                     className="btn btn-secondary"
                     style={{ fontSize: '0.8125rem' }}
                   >
@@ -951,10 +858,11 @@ function AuthPageInner() {
               ) : (
                 <>
                   <div className="form-group">
-                    <label className="form-label">Email Address</label>
+                    <label className="form-label" htmlFor="forgot-email">Email Address</label>
                     <div style={{ position: 'relative' }}>
                       <Mail size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
                       <input
+                        id="forgot-email"
                         type="email"
                         className="form-input"
                         style={{ paddingLeft: 38 }}
@@ -968,28 +876,17 @@ function AuthPageInner() {
                   </div>
                   <button
                     type="submit"
-                    className="btn btn-primary"
+                    className="btn btn-primary auth-submit-btn"
                     disabled={loading}
-                    style={{
-                      width: '100%',
-                      padding: '0.7rem',
-                      fontSize: '0.875rem',
-                      fontWeight: 700,
-                      borderRadius: 'var(--radius-md)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '0.5rem',
-                    }}
                   >
                     {loading ? <Loader2 size={18} className="animate-spin" /> : 'Send Reset Link'}
                   </button>
                   <button
                     type="button"
-                    onClick={() => { setTab('login'); setError('') }}
-                    style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', fontWeight: 600, marginTop: '0.75rem', display: 'block', textAlign: 'center', width: '100%', background: 'none', border: 'none', cursor: 'pointer' }}
+                    onClick={() => { setStep('credentials'); setError('') }}
+                    className="auth-back-btn"
                   >
-                    ← Back to Sign In
+                    <ArrowLeft size={14} /> Back to Sign In
                   </button>
                 </>
               )}
@@ -999,11 +896,8 @@ function AuthPageInner() {
 
         {/* Disclaimer */}
         <p style={{
-          textAlign: 'center',
-          fontSize: '0.6875rem',
-          color: 'var(--text-quaternary)',
-          marginTop: '1.5rem',
-          lineHeight: 1.5,
+          textAlign: 'center', fontSize: '0.6875rem',
+          color: 'var(--text-quaternary)', marginTop: '1.5rem', lineHeight: 1.5,
         }}>
           Harcoutian Study Hub is an independent, unofficial student platform.
           Not affiliated with, endorsed by, or sponsored by HBTU.
@@ -1016,6 +910,281 @@ function AuthPageInner() {
           to { transform: rotate(360deg); }
         }
         .animate-spin { animation: spin 1s linear infinite; }
+
+        /* ============ AUTH PAGE RESPONSIVE STYLES ============ */
+        .auth-page-wrapper {
+          min-height: 100vh;
+          min-height: 100dvh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: var(--bg-primary);
+          padding: 2rem;
+          position: relative;
+          overflow: hidden;
+        }
+
+        .auth-ambient-glow {
+          position: absolute;
+          top: 20%;
+          left: 50%;
+          transform: translateX(-50%);
+          width: 600px;
+          height: 400px;
+          background: radial-gradient(ellipse, rgba(79, 70, 229, 0.12), transparent 70%);
+          pointer-events: none;
+        }
+
+        .auth-container {
+          max-width: 440px;
+          width: 100%;
+          position: relative;
+          z-index: 1;
+        }
+
+        .auth-brand-link {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.625rem;
+          margin-bottom: 1rem;
+          text-decoration: none;
+        }
+
+        .auth-card {
+          padding: 2rem;
+          border-radius: var(--radius-xl);
+          box-shadow: var(--shadow-lg);
+        }
+
+        .auth-card:hover {
+          transform: none;
+        }
+
+        .auth-tab-bar {
+          display: flex;
+          gap: 0.25rem;
+          margin-bottom: 1.5rem;
+          padding: 0.25rem;
+          background: var(--bg-secondary);
+          border-radius: var(--radius-full);
+        }
+
+        .auth-tab {
+          flex: 1;
+          padding: 0.5rem;
+          border-radius: var(--radius-full);
+          font-size: 0.8125rem;
+          font-weight: 600;
+          background: transparent;
+          color: var(--text-tertiary);
+          box-shadow: none;
+          transition: all 200ms ease;
+          border: none;
+          cursor: pointer;
+        }
+
+        .auth-tab-active {
+          background: var(--bg-card);
+          color: var(--text-primary);
+          box-shadow: var(--shadow-sm);
+        }
+
+        .auth-submit-btn {
+          width: 100%;
+          padding: 0.7rem;
+          font-size: 0.875rem;
+          font-weight: 700;
+          border-radius: var(--radius-md);
+          gap: 0.5rem;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .auth-oauth-btn {
+          width: 100%;
+          padding: 0.65rem;
+          font-size: 0.875rem;
+          font-weight: 600;
+          justify-content: center;
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+
+        .auth-divider {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          margin: 1.25rem 0;
+        }
+
+        .auth-divider-line {
+          flex: 1;
+          height: 1px;
+          background: var(--border-light);
+        }
+
+        .auth-divider-text {
+          font-size: 0.6875rem;
+          color: var(--text-tertiary);
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          white-space: nowrap;
+        }
+
+        .auth-error-banner {
+          display: flex;
+          align-items: flex-start;
+          gap: 0.5rem;
+          padding: 0.75rem 1rem;
+          border-radius: var(--radius-sm);
+          background: var(--color-danger-bg);
+          color: var(--color-danger);
+          font-size: 0.8125rem;
+          font-weight: 500;
+          margin-bottom: 1rem;
+          line-height: 1.4;
+        }
+
+        .auth-success-banner {
+          display: flex;
+          align-items: flex-start;
+          gap: 0.5rem;
+          padding: 0.75rem 1rem;
+          border-radius: var(--radius-sm);
+          background: var(--color-success-bg);
+          color: var(--color-success);
+          font-size: 0.8125rem;
+          font-weight: 500;
+          margin-bottom: 1rem;
+          line-height: 1.4;
+        }
+
+        .auth-back-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 0.375rem;
+          width: 100%;
+          margin-top: 1rem;
+          padding: 0.5rem;
+          font-size: 0.8125rem;
+          font-weight: 600;
+          color: var(--text-tertiary);
+          background: none;
+          border: none;
+          cursor: pointer;
+          transition: color 150ms ease;
+        }
+
+        .auth-back-btn:hover {
+          color: var(--text-primary);
+        }
+
+        .auth-loading-card {
+          padding: 2.5rem 2rem;
+          border-radius: var(--radius-xl);
+          max-width: 420px;
+          width: 100%;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 1.25rem;
+          box-shadow: var(--shadow-xl);
+        }
+
+        .auth-loading-card:hover {
+          transform: none;
+        }
+
+        .auth-loading-icon {
+          width: 52px;
+          height: 52px;
+          border-radius: 50%;
+          background: linear-gradient(135deg, #4f46e5, #06b6d4);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #fff;
+          box-shadow: 0 4px 16px rgba(79, 70, 229, 0.4);
+        }
+
+        .auth-loading-title {
+          font-size: 1.25rem;
+          font-weight: 800;
+          font-family: var(--font-display);
+          margin-bottom: 6px;
+          text-align: center;
+        }
+
+        .auth-loading-subtitle {
+          font-size: 0.875rem;
+          color: var(--text-secondary);
+          text-align: center;
+        }
+
+        /* ============ MOBILE RESPONSIVE ============ */
+        @media (max-width: 480px) {
+          .auth-page-wrapper {
+            padding: 1rem;
+            align-items: flex-start;
+            padding-top: max(env(safe-area-inset-top, 0px), 1.5rem);
+          }
+
+          .auth-container {
+            max-width: 100%;
+          }
+
+          .auth-card {
+            padding: 1.25rem;
+            border-radius: var(--radius-lg);
+          }
+
+          .auth-ambient-glow {
+            width: 300px;
+            height: 200px;
+            top: 10%;
+          }
+
+          .auth-submit-btn {
+            min-height: 48px;
+            font-size: 0.9375rem;
+          }
+
+          .auth-oauth-btn {
+            min-height: 48px;
+          }
+        }
+
+        @media (max-width: 360px) {
+          .auth-page-wrapper {
+            padding: 0.75rem;
+          }
+
+          .auth-card {
+            padding: 1rem;
+          }
+        }
+
+        /* Touch-friendly inputs on mobile */
+        @media (hover: none) and (pointer: coarse) {
+          .form-input, .form-select {
+            min-height: 48px;
+            font-size: 16px !important;
+          }
+        }
+
+        /* Reduced motion */
+        @media (prefers-reduced-motion: reduce) {
+          .animate-spin {
+            animation: none;
+          }
+          .auth-card, .btn {
+            transition: none !important;
+          }
+        }
       `}</style>
     </div>
   )
@@ -1025,10 +1194,8 @@ export default function AuthPage() {
   return (
     <Suspense fallback={
       <div style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        minHeight: '100vh', display: 'flex',
+        alignItems: 'center', justifyContent: 'center',
         background: 'var(--bg-primary)',
       }}>
         <div style={{ color: 'var(--text-tertiary)' }}>Loading...</div>

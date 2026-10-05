@@ -40,6 +40,7 @@ export async function POST(request: Request) {
     })
 
     // Create user with email auto-confirmed so they can log in immediately
+    // ROLE IS ALWAYS STUDENT. Never trust client-side input for admin creation.
     const { data, error } = await supabaseAdmin.auth.admin.createUser({
       email: cleanEmail,
       password,
@@ -51,7 +52,7 @@ export async function POST(request: Request) {
         branch_id: branchId || 'btech-cse',
         current_year: currentYear || 1,
         current_semester: currentSemester || 1,
-        role: cleanEmail.includes('admin') ? 'admin' : 'student',
+        role: 'student', // HARDCODED FOR SECURITY
       },
     })
 
@@ -82,7 +83,7 @@ export async function POST(request: Request) {
         branch_id: validBranchId,
         current_year: Number(currentYear) || 1,
         current_semester: Number(currentSemester) || 1,
-        role: cleanEmail.includes('admin') ? 'admin' : 'student',
+        role: 'student', // HARDCODED FOR SECURITY
         status: 'active',
       })
 
