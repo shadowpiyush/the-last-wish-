@@ -1,10 +1,21 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { sanitizeInternalPath } from '@/lib/auth/url'
 
 export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
     request,
   })
+
+  // Helper to preserve any refreshed Supabase session cookies across redirects
+  const createRedirect = (destinationUrl: URL) => {
+    const redirectResponse = NextResponse.redirect(destinationUrl)
+    const cookiesToTransfer = supabaseResponse.cookies.getAll()
+    for (const cookie of cookiesToTransfer) {
+      redirectResponse.cookies.set(cookie)
+    }
+    return redirectResponse
+  }
 
   let user: { id: string; email?: string; role?: string } | null = null
   let userRole = 'student'
@@ -14,7 +25,15 @@ export async function updateSession(request: NextRequest) {
     c.name.startsWith('sb-') || c.name.includes('auth-token')
   )
 
-  const isAuthRoute = request.nextUrl.pathname === '/auth' || request.nextUrl.pathname.startsWith('/auth/')
+  const isAuthCallback = request.nextUrl.pathname.startsWith('/auth/callback')
+  const isAuthPage = request.nextUrl.pathname === '/auth'
+  const isAuthRoute = isAuthPage || isAuthCallback || request.nextUrl.pathname.startsWith('/auth/')
+
+  // Allow OAuth/magic-link callbacks to execute without interception
+  if (isAuthCallback) {
+    return supabaseResponse
+  }
+
   const protectedPaths = [
     '/dashboard',
     '/notes',
@@ -34,8 +53,8 @@ export async function updateSession(request: NextRequest) {
   if (!hasAuthCookie && isProtected) {
     const url = request.nextUrl.clone()
     url.pathname = '/auth'
-    url.searchParams.set('redirect', request.nextUrl.pathname)
-    return NextResponse.redirect(url)
+    url.searchParams.set('redirect', sanitizeInternalPath(request.nextUrl.pathname, '/dashboard'))
+    return createRedirect(url)
   }
 
   // Fast path 2: Public route with no auth cookie -> return immediately
@@ -87,8 +106,8 @@ export async function updateSession(request: NextRequest) {
   if (isProtected && !user) {
     const url = request.nextUrl.clone()
     url.pathname = '/auth'
-    url.searchParams.set('redirect', request.nextUrl.pathname)
-    return NextResponse.redirect(url)
+    url.searchParams.set('redirect', sanitizeInternalPath(request.nextUrl.pathname, '/dashboard'))
+    return createRedirect(url)
   }
 
   // Admin-only routes — redirect non-admin users
@@ -96,15 +115,15 @@ export async function updateSession(request: NextRequest) {
     if (userRole !== 'admin') {
       const url = request.nextUrl.clone()
       url.pathname = '/dashboard'
-      return NextResponse.redirect(url)
+      return createRedirect(url)
     }
   }
 
-  // Redirect authenticated users away from auth page
-  if (request.nextUrl.pathname === '/auth' && user) {
+  // Redirect authenticated users away from login page
+  if (isAuthPage && user) {
     const url = request.nextUrl.clone()
     url.pathname = userRole === 'admin' ? '/admin' : '/dashboard'
-    return NextResponse.redirect(url)
+    return createRedirect(url)
   }
 
   return supabaseResponse

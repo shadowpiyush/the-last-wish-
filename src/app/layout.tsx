@@ -3,6 +3,7 @@ import './globals.css'
 import { ThemeProvider } from '@/components/providers/ThemeProvider'
 import { ToastProvider } from '@/components/providers/ToastProvider'
 import { AuthProvider } from '@/components/providers/AuthProvider'
+import { getBaseUrl } from '@/lib/auth/url'
 
 export const metadata: Metadata = {
   title: {
@@ -11,7 +12,7 @@ export const metadata: Metadata = {
   },
   description:
     'Harcoutian Study Hub: An independent, unofficial student study portal featuring canonical syllabus roadmaps, verified lecture notes, previous year question papers (PYQs), digital academic library, and calculators for HBTU undergraduate engineering and management programs.',
-  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'),
+  metadataBase: new URL(getBaseUrl()),
   openGraph: {
     type: 'website',
     locale: 'en_IN',

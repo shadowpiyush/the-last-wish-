@@ -5,6 +5,7 @@ import { useRouter, usePathname } from 'next/navigation'
 import { useAuth } from '@/components/providers/AuthProvider'
 import { AppShell } from '@/components/layout/AppShell'
 import { Loader2 } from 'lucide-react'
+import { sanitizeInternalPath } from '@/lib/auth/url'
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, profile, loading } = useAuth()
@@ -14,7 +15,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!loading) {
       if (!user) {
-        const redirectUrl = pathname ? `/auth?redirect=${encodeURIComponent(pathname)}` : '/auth'
+        const safePath = sanitizeInternalPath(pathname, '')
+        const redirectUrl = safePath ? `/auth?redirect=${encodeURIComponent(safePath)}` : '/auth'
         router.replace(redirectUrl)
       } else if (profile && (!profile.mobile_number || !profile.program_id)) {
         router.replace('/complete-profile')

@@ -123,7 +123,7 @@ function CompleteProfileInner() {
       })
       
       // Force a full refresh to ensure all layouts fetch the latest data
-      window.location.href = '/dashboard'
+      window.location.href = profile?.role === 'admin' ? '/admin' : '/dashboard'
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to update profile.'
       setError(msg)

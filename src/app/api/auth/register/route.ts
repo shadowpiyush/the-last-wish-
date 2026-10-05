@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { validateAndNormalizeIndianMobile } from '@/lib/validation/mobile'
+import { getAuthCallbackUrl, getBaseUrlFromRequest } from '@/lib/auth/url'
 
 export async function POST(request: Request) {
   try {
@@ -28,7 +29,7 @@ export async function POST(request: Request) {
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL
+    const callbackUrl = getAuthCallbackUrl(getBaseUrlFromRequest(request))
 
     if (!supabaseUrl || !serviceKey || supabaseUrl.includes('placeholder.supabase.co')) {
       return NextResponse.json(
@@ -61,7 +62,7 @@ export async function POST(request: Request) {
       email: cleanEmail,
       password,
       options: {
-        emailRedirectTo: `${appUrl || 'http://localhost:3000'}/auth/callback`,
+        emailRedirectTo: callbackUrl,
         data: {
           full_name: fullName.trim(),
           mobile_number: normalizedMobile,

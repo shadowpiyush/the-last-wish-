@@ -21,6 +21,7 @@ import {
 import { useAuth } from '@/components/providers/AuthProvider'
 import { createClient } from '@/lib/supabase/client'
 import { validateAndNormalizeIndianMobile } from '@/lib/validation/mobile'
+import { sanitizeInternalPath } from '@/lib/auth/url'
 
 interface ProgramItem {
   id: string
@@ -98,10 +99,7 @@ function AuthPageInner() {
     if (user && !authLoading) {
       setRedirecting(true)
       const explicitRedirect = searchParams.get('redirect')
-      const safeRedirect =
-        explicitRedirect && explicitRedirect.startsWith('/') && !explicitRedirect.startsWith('//')
-          ? explicitRedirect
-          : null
+      const safeRedirect = sanitizeInternalPath(explicitRedirect, '')
       const target = safeRedirect || (profile?.role === 'admin' ? '/admin' : '/dashboard')
       window.location.href = target
     }

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { getBaseUrlFromRequest, sanitizeInternalPath } from '@/lib/auth/url'
 
 /**
  * Auth callback handler for OAuth providers (Google)
@@ -9,16 +10,17 @@ import { createClient } from '@/lib/supabase/server'
  * OAuth consent or email verification. We exchange the code for a session.
  */
 export async function GET(request: Request) {
-  const { searchParams, origin } = new URL(request.url)
+  const { searchParams } = new URL(request.url)
+  const baseUrl = getBaseUrlFromRequest(request)
   const code = searchParams.get('code')
-  const rawNext = searchParams.get('next') ?? '/dashboard'
-  const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/dashboard'
+  const rawNext = searchParams.get('next')
+  const next = sanitizeInternalPath(rawNext, '/dashboard')
   const error = searchParams.get('error')
   const errorDescription = searchParams.get('error_description')
 
   if (error || errorDescription) {
     const msg = encodeURIComponent(errorDescription || error || 'OAuth authentication failed')
-    return NextResponse.redirect(`${origin}/auth?error=${msg}`)
+    return NextResponse.redirect(`${baseUrl}/auth?error=${msg}`)
   }
 
   if (code) {
@@ -40,10 +42,10 @@ export async function GET(request: Request) {
           
           // Google OAuth might not provide mobile number or program details
           if (!profile || !profile.mobile_number || !profile.program_id) {
-            return NextResponse.redirect(`${origin}/complete-profile`)
+            return NextResponse.redirect(`${baseUrl}/complete-profile`)
           }
 
-          // If role check is needed, we could fetch it too and redirect appropriately
+          // Server-side role resolution from profiles table
           const { data: roleProfile } = await supabase
             .from('profiles')
             .select('role')
@@ -52,18 +54,18 @@ export async function GET(request: Request) {
           
           const role = roleProfile?.role || 'student'
           const finalNext = next === '/dashboard' && role === 'admin' ? '/admin' : next
-          return NextResponse.redirect(`${origin}${finalNext}`)
+          return NextResponse.redirect(`${baseUrl}${finalNext}`)
         }
         
-        return NextResponse.redirect(`${origin}${next}`)
+        return NextResponse.redirect(`${baseUrl}${next}`)
       }
-      return NextResponse.redirect(`${origin}/auth?error=${encodeURIComponent(exchangeError.message)}`)
+      return NextResponse.redirect(`${baseUrl}/auth?error=${encodeURIComponent(exchangeError.message)}`)
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : 'Session exchange failed'
-      return NextResponse.redirect(`${origin}/auth?error=${encodeURIComponent(errMsg)}`)
+      return NextResponse.redirect(`${baseUrl}/auth?error=${encodeURIComponent(errMsg)}`)
     }
   }
 
   // Auth code exchange failed — redirect to auth page with error
-  return NextResponse.redirect(`${origin}/auth?error=auth_callback_error`)
+  return NextResponse.redirect(`${baseUrl}/auth?error=auth_callback_error`)
 }

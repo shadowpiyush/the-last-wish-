@@ -4,6 +4,7 @@ import { createContext, useContext, useState, useEffect, useCallback, type React
 import { createClient } from '@/lib/supabase/client'
 import { useToast } from '@/components/providers/ToastProvider'
 import { validateAndNormalizeIndianMobile } from '@/lib/validation/mobile'
+import { getBaseUrl, getAuthCallbackUrl } from '@/lib/auth/url'
 import type { User, Session } from '@supabase/supabase-js'
 
 // Profile data stored in public.profiles table
@@ -314,8 +315,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const resetPassword = async (email: string) => {
+    const base = getBaseUrl()
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-      redirectTo: `${window.location.origin}/auth?type=recovery`,
+      redirectTo: `${base}/auth?type=recovery`,
     })
     if (error) {
       showToast({ type: 'error', message: error.message })
@@ -335,10 +337,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithOAuth = async (provider: OAuthProvider) => {
     try {
+      const callbackUrl = getAuthCallbackUrl()
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider,
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
+          redirectTo: callbackUrl,
         },
       })
 
