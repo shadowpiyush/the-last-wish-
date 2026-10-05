@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, Suspense, useRef } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import {
@@ -17,7 +17,6 @@ import {
   CheckCircle2,
   Loader2,
   GraduationCap,
-  KeyRound,
 } from 'lucide-react'
 import { useAuth } from '@/components/providers/AuthProvider'
 import { createClient } from '@/lib/supabase/client'
@@ -38,12 +37,12 @@ interface BranchItem {
   code: string
 }
 
-type AuthStep = 'credentials' | 'otp' | 'register' | 'forgot'
+type AuthStep = 'credentials' | 'register' | 'forgot'
 
 function AuthPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { user, profile, signInWithOAuth, signUp, resetPassword, loading: authLoading } = useAuth()
+  const { user, profile, signInWithOAuth, signInWithPassword, signUp, resetPassword, loading: authLoading } = useAuth()
 
   const [step, setStep] = useState<AuthStep>('credentials')
   const [showPassword, setShowPassword] = useState(false)
@@ -52,17 +51,9 @@ function AuthPageInner() {
   const [error, setError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
 
-  // Login form — initially empty, no prefilled credentials
+  // Login form
   const [loginEmail, setLoginEmail] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
-
-  // OTP state
-  const [challengeId, setChallengeId] = useState('')
-  const [maskedEmail, setMaskedEmail] = useState('')
-  const [otpCode, setOtpCode] = useState('')
-  const [remainingAttempts, setRemainingAttempts] = useState<number | null>(null)
-  const [resendCooldown, setResendCooldown] = useState(0)
-  const otpInputRef = useRef<HTMLInputElement>(null)
 
   // Register form
   const [regEmail, setRegEmail] = useState('')
@@ -102,7 +93,7 @@ function AuthPageInner() {
     }
   }, [searchParams])
 
-  // Redirect already-authenticated users
+  // Redirect already-authenticated users based on server-side role resolution
   useEffect(() => {
     if (user && !authLoading) {
       setRedirecting(true)
@@ -147,14 +138,6 @@ function AuthPageInner() {
     loadProgramsAndBranches()
   }, [])
 
-  // Resend cooldown timer
-  useEffect(() => {
-    if (resendCooldown > 0) {
-      const timer = setTimeout(() => setResendCooldown((c) => c - 1), 1000)
-      return () => clearTimeout(timer)
-    }
-  }, [resendCooldown])
-
   const handleProgramSelect = (progId: string) => {
     setRegProgramId(progId)
     const matching = branchesList.filter((b) => b.program_id === progId)
@@ -186,103 +169,11 @@ function AuthPageInner() {
 
     setLoading(true)
     try {
-      const res = await fetch('/api/auth/login/initiate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      })
-      const data = await res.json()
-
-      if (!res.ok) {
-        setError(data.error || 'Sign in failed.')
-        setLoading(false)
-        return
-      }
-
-      // Switch to OTP step
-      setChallengeId(data.challengeId)
-      setMaskedEmail(data.maskedEmail)
-      setOtpCode('')
-      setRemainingAttempts(null)
-      setResendCooldown(30)
-      setStep('otp')
-      setTimeout(() => otpInputRef.current?.focus(), 150)
-    } catch {
-      setError('Network error. Please check your connection and try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleVerifyOTP = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError('')
-
-    const code = otpCode.trim()
-    if (!code || code.length !== 6) {
-      setError('Please enter the 6-digit verification code.')
-      return
-    }
-
-    setLoading(true)
-    try {
-      const res = await fetch('/api/auth/otp/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ challengeId, otp: code }),
-      })
-      const data = await res.json()
-
-      if (!res.ok) {
-        if (data.remainingAttempts !== undefined) {
-          setRemainingAttempts(data.remainingAttempts)
-        }
-        setError(data.error || 'Verification failed.')
-        setOtpCode('')
-        setLoading(false)
-        setTimeout(() => otpInputRef.current?.focus(), 100)
-        return
-      }
-
-      // Session cookies set by server, redirect now
+      await signInWithPassword(email, password)
       setRedirecting(true)
-      const explicitRedirect = searchParams.get('redirect')
-      window.location.href = explicitRedirect || data.redirectTo || '/dashboard'
-    } catch {
-      setError('Network error. Please try again.')
-      setLoading(false)
-    }
-  }
-
-  const handleResendOTP = async () => {
-    if (resendCooldown > 0 || loading) return
-    setError('')
-    setSuccessMessage('')
-    setLoading(true)
-
-    try {
-      const res = await fetch('/api/auth/otp/resend', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ challengeId }),
-      })
-      const data = await res.json()
-
-      if (!res.ok) {
-        setError(data.error || 'Failed to resend code.')
-        setLoading(false)
-        return
-      }
-
-      setChallengeId(data.challengeId)
-      setOtpCode('')
-      setRemainingAttempts(null)
-      setResendCooldown(60)
-      setSuccessMessage('A new verification code has been sent to your email.')
-      setTimeout(() => otpInputRef.current?.focus(), 100)
-    } catch {
-      setError('Network error. Please try again.')
-    } finally {
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Sign in failed. Please check your credentials.'
+      setError(message)
       setLoading(false)
     }
   }
@@ -351,15 +242,6 @@ function AuthPageInner() {
     }
   }
 
-  const handleBackToCredentials = () => {
-    setStep('credentials')
-    setError('')
-    setSuccessMessage('')
-    setOtpCode('')
-    setChallengeId('')
-    setRemainingAttempts(null)
-  }
-
   // ==================== LOADING / REDIRECT STATE ====================
 
   if (authLoading || redirecting) {
@@ -415,15 +297,10 @@ function AuthPageInner() {
           <h1 style={{
             fontSize: '1.5rem', fontWeight: 800, fontFamily: 'var(--font-display)',
           }}>
-            {step === 'otp' ? (
-              <>Verify Your <span className="text-gradient">Identity</span></>
-            ) : (
-              <>Welcome to <span className="text-gradient">Harcoutian Hub</span></>
-            )}
+            Welcome to <span className="text-gradient">Harcoutian Hub</span>
           </h1>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginTop: '0.25rem' }}>
             {step === 'credentials' && 'Sign in to access your academic portal'}
-            {step === 'otp' && `Enter the verification code sent to ${maskedEmail}`}
             {step === 'register' && 'Create your student account'}
             {step === 'forgot' && 'Reset your password'}
           </p>
@@ -431,7 +308,7 @@ function AuthPageInner() {
 
         {/* Auth card */}
         <div className="glass-card auth-card">
-          {/* Tab switcher (credentials vs register) — NOT shown for OTP or forgot */}
+          {/* Tab switcher (credentials vs register) */}
           {(step === 'credentials' || step === 'register') && (
             <div className="auth-tab-bar">
               {(['credentials', 'register'] as const).map((t) => (
@@ -552,99 +429,6 @@ function AuthPageInner() {
                   <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
                 </svg>
                 Continue with Google
-              </button>
-            </form>
-          )}
-
-          {/* ==================== OTP STEP ==================== */}
-          {step === 'otp' && (
-            <form onSubmit={handleVerifyOTP} noValidate>
-              <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                margin: '0.5rem 0 1.25rem',
-              }}>
-                <div style={{
-                  width: 56, height: 56, borderRadius: '50%',
-                  background: 'linear-gradient(135deg, rgba(79, 70, 229, 0.12), rgba(6, 182, 212, 0.12))',
-                  border: '1px solid rgba(79, 70, 229, 0.2)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: 'var(--color-accent)',
-                }}>
-                  <KeyRound size={26} />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label" htmlFor="otp-input" style={{ textAlign: 'center', display: 'block' }}>
-                  Verification Code
-                </label>
-                <input
-                  ref={otpInputRef}
-                  id="otp-input"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  className="form-input"
-                  style={{
-                    textAlign: 'center', fontSize: '1.5rem', fontWeight: 700,
-                    letterSpacing: '0.5em', fontFamily: 'var(--font-mono)',
-                    padding: '0.875rem',
-                  }}
-                  placeholder="000000"
-                  value={otpCode}
-                  onChange={(e) => {
-                    const val = e.target.value.replace(/\D/g, '').slice(0, 6)
-                    setOtpCode(val)
-                  }}
-                  maxLength={6}
-                  required
-                />
-                {remainingAttempts !== null && remainingAttempts <= 3 && (
-                  <p className="form-error" style={{ textAlign: 'center', marginTop: '0.5rem' }}>
-                    {remainingAttempts === 0
-                      ? 'No attempts remaining'
-                      : `${remainingAttempts} attempt${remainingAttempts === 1 ? '' : 's'} remaining`}
-                  </p>
-                )}
-              </div>
-
-              <button
-                type="submit"
-                className="btn btn-primary auth-submit-btn"
-                disabled={loading || otpCode.length !== 6}
-              >
-                {loading ? (
-                  <><Loader2 size={18} className="animate-spin" /><span>Verifying...</span></>
-                ) : (
-                  <>Verify & Sign In <ArrowRight size={16} /></>
-                )}
-              </button>
-
-              <div style={{ textAlign: 'center', marginTop: '1rem' }}>
-                <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginBottom: '0.5rem' }}>
-                  Didn&apos;t receive the code?
-                </p>
-                <button
-                  type="button"
-                  onClick={handleResendOTP}
-                  disabled={resendCooldown > 0 || loading}
-                  style={{
-                    fontSize: '0.8125rem', fontWeight: 600,
-                    color: resendCooldown > 0 ? 'var(--text-quaternary)' : 'var(--color-accent)',
-                    background: 'none', border: 'none', cursor: resendCooldown > 0 ? 'default' : 'pointer',
-                    padding: 0,
-                  }}
-                >
-                  {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend Code'}
-                </button>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleBackToCredentials}
-                className="auth-back-btn"
-              >
-                <ArrowLeft size={14} /> Back to Sign In
               </button>
             </form>
           )}

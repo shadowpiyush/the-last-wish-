@@ -35,6 +35,7 @@ interface AuthContextType {
   session: Session | null
   loading: boolean
   signInWithOAuth: (provider: OAuthProvider) => Promise<void>
+  signInWithPassword: (email: string, password: string) => Promise<void>
   signUp: (params: SignUpParams) => Promise<void>
   signOut: () => Promise<void>
   updateProfile: (data: Partial<UserProfile>) => Promise<void>
@@ -201,11 +202,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error(data.error || 'Registration failed')
       }
 
-      // Do NOT sign in automatically to enforce the OTP flow on manual sign-in
+      // We do not sign in automatically after registration.
+      // The user must manually sign in with their new credentials.
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : 'Registration failed'
       showToast({ type: 'error', message: errMsg })
       throw err
+    }
+  }
+
+  const signInWithPassword = async (email: string, password: string) => {
+    const cleanEmail = email.trim().toLowerCase()
+    
+    const { error } = await supabase.auth.signInWithPassword({
+      email: cleanEmail,
+      password,
+    })
+
+    if (error) {
+      showToast({ type: 'error', message: error.message })
+      throw error
     }
   }
 
@@ -341,6 +357,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         session,
         loading,
         signInWithOAuth,
+        signInWithPassword,
         signUp,
         signOut,
         updateProfile,
