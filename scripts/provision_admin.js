@@ -1,10 +1,11 @@
-require('dotenv').config({ path: '.env.local' })
-const { createClient } = require('@supabase/supabase-js')
-
 const TARGET_EMAIL = 'arvind.ksj18@gmail.com'
 const ADMIN_ROLE = 'admin'
 
 async function provisionAdmin() {
+  const dotenv = await import('dotenv')
+  const { createClient } = await import('@supabase/supabase-js')
+  dotenv.config({ path: '.env.local' })
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   const adminPassword = process.env.PROVISION_ADMIN_PASSWORD

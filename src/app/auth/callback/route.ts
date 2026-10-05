@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getBaseUrlFromRequest, sanitizeInternalPath } from '@/lib/auth/url'
+import { isProfileComplete } from '@/lib/auth/profile'
+import type { UserProfile } from '@/components/providers/AuthProvider'
 
 /**
  * Auth callback handler for OAuth providers (Google)
@@ -36,12 +38,12 @@ export async function GET(request: Request) {
           // Verify profile completion
           const { data: profile } = await supabase
             .from('profiles')
-            .select('mobile_number, full_name, program_id, branch_id')
+            .select('mobile_number, full_name, program_id, branch_id, role')
             .eq('id', user.id)
             .maybeSingle()
           
-          // Google OAuth might not provide mobile number or program details
-          if (!profile || !profile.mobile_number || !profile.program_id) {
+          // Google OAuth users without complete profile are routed to complete-profile
+          if (!isProfileComplete(profile as UserProfile)) {
             return NextResponse.redirect(`${baseUrl}/complete-profile`)
           }
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import {
   Shield,
   Users,
@@ -17,8 +17,6 @@ import {
   ExternalLink,
   BookOpen,
   Image as ImageIcon,
-  HardDrive,
-  Calendar,
   Layers,
   Sparkles,
   Copy,
@@ -31,11 +29,10 @@ import {
   Eye,
   ChevronLeft,
   ChevronRight,
-  Mail,
   Phone,
-  Building2,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
+import Image from 'next/image'
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50 MB (Supabase Cloud Storage limit for notes)
 const MAX_EBOOK_FILE_SIZE = 500 * 1024 * 1024 // 500 MB (Cloudflare R2 Direct Multipart Upload limit)
@@ -257,7 +254,7 @@ function AcademicMappingEditor({
     setMappings((prev) => prev.filter((_, i) => i !== idx))
   }
 
-  const updateGroupField = (idx: number, field: keyof AcademicMappingGroup, val: any) => {
+  const updateGroupField = (idx: number, field: keyof AcademicMappingGroup, val: AcademicMappingGroup[keyof AcademicMappingGroup]) => {
     setMappings((prev) => {
       const next = [...prev]
       next[idx] = { ...next[idx], [field]: val }
@@ -787,7 +784,7 @@ function AcademicMappingEditor({
 }
 
 export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] }: AdminClientProps) {
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
   const [activeTab, setActiveTab] = useState<AdminTab>('overview')
 
   // Academic data for selectors
@@ -816,7 +813,6 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
   const [bookEdition, setBookEdition] = useState('')
   const [bookYear, setBookYear] = useState(new Date().getFullYear())
   const [bookPages, setBookPages] = useState(250)
-  const [bookType, setBookType] = useState('Textbook')
   const [bookDescription, setBookDescription] = useState('')
   const [bookPdfFile, setBookPdfFile] = useState<File | null>(null)
   const [coverImageFile, setCoverImageFile] = useState<File | null>(null)
@@ -865,14 +861,19 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
   const [usersBranchFilter, setUsersBranchFilter] = useState('all')
   const [usersRoleFilter, setUsersRoleFilter] = useState('all')
   const [usersStatusFilter, setUsersStatusFilter] = useState('all')
+  const usersSearchRef = useRef(usersSearch)
   const [usersPage, setUsersPage] = useState(1)
   const [usersTotalCount, setUsersTotalCount] = useState(0)
   const [usersTotalPages, setUsersTotalPages] = useState(1)
   const [selectedUserDetail, setSelectedUserDetail] = useState<AdminUserItem | null>(null)
   const [updatingUserStatus, setUpdatingUserStatus] = useState(false)
 
+  useEffect(() => {
+    usersSearchRef.current = usersSearch
+  }, [usersSearch])
+
   // Fetch Users Function
-  const fetchUsers = async (page = 1, searchQuery = usersSearch) => {
+  const fetchUsers = useCallback(async (page = 1, searchQuery = '') => {
     setUsersLoading(true)
     try {
       const params = new URLSearchParams({
@@ -896,14 +897,14 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
     } finally {
       setUsersLoading(false)
     }
-  }
+  }, [usersBranchFilter, usersRoleFilter, usersStatusFilter])
 
   // Trigger user fetch when tab is opened or filters change
   useEffect(() => {
     if (activeTab === 'users') {
-      fetchUsers(1, usersSearch)
+      void Promise.resolve().then(() => fetchUsers(1, usersSearchRef.current))
     }
-  }, [activeTab, usersBranchFilter, usersRoleFilter, usersStatusFilter])
+  }, [activeTab, usersBranchFilter, usersRoleFilter, usersStatusFilter, fetchUsers])
 
   // Handle Search submit
   const handleUserSearchSubmit = (e: React.FormEvent) => {
@@ -933,7 +934,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
       } else {
         alert(data.error || 'Failed to update user status.')
       }
-    } catch (e) {
+    } catch {
       alert('Error updating user status.')
     } finally {
       setUpdatingUserStatus(false)
@@ -964,30 +965,19 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
       if (subs) setSubjects(subs)
     }
     loadAcademicHierarchy()
-  }, [])
-
-  // Sync branches when selected note program changes
-  useEffect(() => {
-    if (noteProgramId && branches.length > 0) {
-      const match = branches.filter((b) => b.program_id === noteProgramId)
-      if (match.length > 0 && !match.some((b) => b.id === noteBranchId)) {
-        setNoteBranchId(match[0].id)
-      }
-    }
-  }, [noteProgramId, branches])
+  }, [supabase])
 
   // Filter subjects for Note
+  const availableNoteBranches = branches.filter((b) => b.program_id === noteProgramId)
+  const effectiveNoteBranchId = availableNoteBranches.some((b) => b.id === noteBranchId)
+    ? noteBranchId
+    : availableNoteBranches[0]?.id || ''
   const availableNoteSubjects = subjects.filter(
-    (s) => s.branch_id === noteBranchId && s.semester_number === Number(noteSemester)
+    (s) => s.branch_id === effectiveNoteBranchId && s.semester_number === Number(noteSemester)
   )
-
-  useEffect(() => {
-    if (availableNoteSubjects.length > 0) {
-      setNoteSubjectId(availableNoteSubjects[0].id)
-    } else {
-      setNoteSubjectId('')
-    }
-  }, [noteBranchId, noteSemester, subjects])
+  const effectiveNoteSubjectId = availableNoteSubjects.some((s) => s.id === noteSubjectId)
+    ? noteSubjectId
+    : availableNoteSubjects[0]?.id || ''
 
   // Load uploaded notes and books when Manage tab is active
   const loadContent = async () => {
@@ -1008,7 +998,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
 
   useEffect(() => {
     if (activeTab === 'manage_content') {
-      loadContent()
+      void Promise.resolve().then(() => loadContent())
     }
   }, [activeTab])
 
@@ -1046,7 +1036,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
       setNoteMessage(`Error: File size exceeds the maximum 50 MB limit (${(noteFile.size / (1024 * 1024)).toFixed(1)} MB). Please select a file under 50 MB.`)
       return
     }
-    if (!noteSubjectId) {
+    if (!effectiveNoteSubjectId) {
       setNoteMessage('Error: Please select a valid subject for this note.')
       return
     }
@@ -1093,7 +1083,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
         body: JSON.stringify({
           title: noteTitle.trim(),
           description: noteDescription.trim() || null,
-          subjectId: noteSubjectId,
+      subjectId: effectiveNoteSubjectId,
           filePath: signData.path,
           fileSize: noteFile.size,
           fileType: 'application/pdf',
@@ -1285,7 +1275,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                 directSuccess = true
               }
             }
-          } catch (netErr: any) {
+          } catch (netErr: unknown) {
             if (abortController.signal.aborted) throw new Error('Upload cancelled')
             console.warn(`Direct R2 upload for chunk ${partNumber} failed (likely CORS preflight). Using server-side chunk stream fallback:`, netErr)
           }
@@ -1452,8 +1442,8 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
       if (res.ok) {
         setUploadedNotes((prev) => prev.filter((n) => n.id !== id))
       }
-    } catch (e) {
-      console.error('Failed to delete note:', e)
+    } catch {
+      console.error('Failed to delete note.')
     }
   }
 
@@ -1480,7 +1470,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
       } else {
         alert('Unable to generate document viewing URL.')
       }
-    } catch (e) {
+    } catch {
       alert('Error fetching file URL.')
     }
   }
@@ -2390,7 +2380,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                   <label className="form-label" style={{ fontSize: '0.75rem' }}>Branch</label>
                   <select
                     className="form-select"
-                    value={noteBranchId}
+                    value={effectiveNoteBranchId}
                     onChange={(e) => setNoteBranchId(e.target.value)}
                     style={{ fontSize: '0.8125rem' }}
                   >
@@ -2420,7 +2410,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                   <label className="form-label" style={{ fontSize: '0.75rem' }}>Subject</label>
                   <select
                     className="form-select"
-                    value={noteSubjectId}
+                    value={effectiveNoteSubjectId}
                     onChange={(e) => setNoteSubjectId(e.target.value)}
                     style={{ fontSize: '0.8125rem' }}
                     required
@@ -2745,9 +2735,12 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                   />
                   {coverPreview ? (
                     <div style={{ width: '100%', textAlign: 'center' }}>
-                      <img
+                      <Image
                         src={coverPreview}
                         alt="Cover Preview"
+                        width={100}
+                        height={140}
+                        unoptimized
                         style={{
                           width: 100,
                           height: 140,
@@ -2871,7 +2864,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                   />
                 </div>
                 <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', marginTop: 6 }}>
-                  Direct browser-to-R2 upload in progress. Please don't close this page.
+                  Direct browser-to-R2 upload in progress. Please do not close this page.
                 </div>
               </div>
             )}
@@ -3020,9 +3013,12 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                     }}
                   >
                     {b.cover_image_url ? (
-                      <img
+                      <Image
                         src={b.cover_image_url}
                         alt={b.title}
+                        width={50}
+                        height={70}
+                        unoptimized
                         style={{
                           width: 50,
                           height: 70,

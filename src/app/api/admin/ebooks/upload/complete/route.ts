@@ -4,6 +4,16 @@ import { getR2Client, getR2Config } from '@/lib/r2/client'
 import { CompleteMultipartUploadCommand } from '@aws-sdk/client-s3'
 import { createClient as createAdminSupabase } from '@supabase/supabase-js'
 
+interface MappingRow {
+  book_id: string
+  program_id: string | null
+  branch_id: string | null
+  year_number: number | null
+  semester_number: number | null
+  subject_id: string | null
+  academic_category: string
+}
+
 export async function POST(request: Request) {
   try {
     // 1. Strict admin verification
@@ -97,7 +107,7 @@ export async function POST(request: Request) {
     })
 
     // 5. Insert into public.ebooks table (if exists)
-    let savedEbookRecord: any = null
+    let savedEbookRecord: { id: string } | null = null
     try {
       const { data: ebookRow, error: ebookErr } = await supabaseAdmin
         .from('ebooks')
@@ -124,7 +134,7 @@ export async function POST(request: Request) {
     }
 
     // 6. Insert / sync into library_books for platform-wide library browsing and reader
-    let libraryBookRecord: any = null
+    let libraryBookRecord: { id: string } | null = null
     try {
       // Determine subject_id fallback if needed
       let chosenSubjectId: string | null = null
@@ -145,7 +155,7 @@ export async function POST(request: Request) {
         }
       }
 
-      const libraryPayload: any = {
+      const libraryPayload: Record<string, unknown> = {
         title: title.trim(),
         subtitle: subtitle?.trim() || null,
         author: (author || 'Unknown').trim(),
@@ -175,7 +185,7 @@ export async function POST(request: Request) {
 
       // 7. Save Academic Mappings if provided and library book created
       if (libraryBookRecord && Array.isArray(mappings) && mappings.length > 0) {
-        const mappingRows: any[] = []
+        const mappingRows: MappingRow[] = []
         for (const g of mappings) {
           const programId = g.programId || null
           const branches = g.branchIds && g.branchIds.length > 0 ? g.branchIds : [null]

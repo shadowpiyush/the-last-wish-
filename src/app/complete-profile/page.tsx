@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '@/components/providers/AuthProvider'
 import { createClient } from '@/lib/supabase/client'
 import { validateAndNormalizeIndianMobile } from '@/lib/validation/mobile'
+import { isProfileComplete } from '@/lib/auth/profile'
 import { Phone, GraduationCap, ArrowRight, Loader2, AlertCircle } from 'lucide-react'
 
 interface ProgramItem {
@@ -24,7 +25,7 @@ interface BranchItem {
 
 function CompleteProfileInner() {
   const router = useRouter()
-  const { user, profile, updateProfile, loading: authLoading } = useAuth()
+  const { user, profile, completeProfile, loading: authLoading } = useAuth()
   
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -41,7 +42,7 @@ function CompleteProfileInner() {
   // Redirect if already completed
   useEffect(() => {
     if (!authLoading && profile) {
-      if (profile.mobile_number && profile.program_id) {
+      if (isProfileComplete(profile)) {
         router.replace(profile.role === 'admin' ? '/admin' : '/dashboard')
       }
     }
@@ -114,16 +115,18 @@ function CompleteProfileInner() {
 
     setLoading(true)
     try {
-      await updateProfile({
-        mobile_number: mobileCheck.normalized!,
-        program_id: regProgramId,
-        branch_id: regBranchId,
-        current_year: regYear,
-        current_semester: regSemester,
+      const updated = await completeProfile({
+        fullName: profile?.full_name || user?.user_metadata?.full_name || '',
+        mobileNumber: mobileCheck.normalized!,
+        programId: regProgramId,
+        branchId: regBranchId,
+        currentYear: regYear,
+        currentSemester: regSemester,
       })
       
-      // Force a full refresh to ensure all layouts fetch the latest data
-      window.location.href = profile?.role === 'admin' ? '/admin' : '/dashboard'
+      // Backend write confirmed successful. Authoritative state updated.
+      const target = updated.role === 'admin' ? '/admin' : '/dashboard'
+      router.replace(target)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to update profile.'
       setError(msg)

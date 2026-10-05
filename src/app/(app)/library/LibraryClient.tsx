@@ -5,13 +5,11 @@ import {
   Library,
   BookOpen,
   Search,
-  Filter,
   CheckCircle2,
   X,
   Lock,
   GraduationCap,
   Globe,
-  Sparkles,
   Plus,
 } from 'lucide-react'
 import Link from 'next/link'
@@ -30,7 +28,7 @@ interface AcademicMappingItem {
   programs?: { id: string; name: string; short_code: string } | null
 }
 
-interface BookItem {
+export interface BookItem {
   id: string
   title: string
   subtitle?: string

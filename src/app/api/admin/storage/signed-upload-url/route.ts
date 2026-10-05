@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js'
 export async function POST(request: Request) {
   try {
     const body = await request.json()
-    const { bucket, fileName, contentType, fileSize } = body
+    const { bucket, fileName, fileSize } = body
 
     if (!bucket || !fileName) {
       return NextResponse.json(

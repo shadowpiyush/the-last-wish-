@@ -9,7 +9,6 @@ import {
   HardDrive,
   BookOpen,
   X,
-  Shield,
   Lock,
 } from 'lucide-react'
 
@@ -48,7 +47,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / 1048576).toFixed(1)} MB`
 }
 
-export function NotesClient({ initialNotes, programs }: NotesClientProps) {
+export function NotesClient({ initialNotes }: NotesClientProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [loadingNoteId, setLoadingNoteId] = useState<string | null>(null)
   const [activeReadingNote, setActiveReadingNote] = useState<{ note: Note; url: string } | null>(null)

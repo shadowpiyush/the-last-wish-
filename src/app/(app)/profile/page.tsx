@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import Image from 'next/image'
 import { User, Mail, Phone, GraduationCap, Lock, Camera, Save, LogOut, Shield, CheckCircle2 } from 'lucide-react'
 import { useAuth } from '@/components/providers/AuthProvider'
 import { createClient } from '@/lib/supabase/client'
@@ -22,6 +24,7 @@ interface BranchItem {
 }
 
 export default function ProfilePage() {
+  const router = useRouter()
   const supabase = createClient()
   const { user, profile, signOut, changePassword, updateProfile, refreshProfile, loading: authLoading } = useAuth()
 
@@ -47,12 +50,15 @@ export default function ProfilePage() {
   // Sync state when profile loads
   useEffect(() => {
     if (profile) {
-      setFullName(profile.full_name || '')
-      setMobile(profile.mobile_number || '')
-      if (profile.program_id) setProgramId(profile.program_id)
-      if (profile.branch_id) setBranchId(profile.branch_id)
-      if (profile.current_year) setCurrentYear(profile.current_year)
-      if (profile.current_semester) setCurrentSemester(profile.current_semester)
+      const frame = window.requestAnimationFrame(() => {
+        setFullName(profile.full_name || '')
+        setMobile(profile.mobile_number || '')
+        if (profile.program_id) setProgramId(profile.program_id)
+        if (profile.branch_id) setBranchId(profile.branch_id)
+        if (profile.current_year) setCurrentYear(profile.current_year)
+        if (profile.current_semester) setCurrentSemester(profile.current_semester)
+      })
+      return () => window.cancelAnimationFrame(frame)
     }
   }, [profile])
 
@@ -157,7 +163,7 @@ export default function ProfilePage() {
 
   const handleSignOut = async () => {
     await signOut()
-    window.location.href = '/auth'
+    router.replace('/auth')
   }
 
   if (authLoading) {
@@ -214,9 +220,11 @@ export default function ProfilePage() {
             position: 'relative',
           }}>
             {profile?.profile_picture_url ? (
-              <img
+              <Image
                 src={profile.profile_picture_url}
                 alt="Avatar"
+                width={120}
+                height={120}
                 style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }}
               />
             ) : (

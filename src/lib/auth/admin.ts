@@ -18,7 +18,8 @@ export interface AdminVerifyResult {
 /**
  * Resolves the authenticated user from Supabase cookies and profiles table.
  */
-export async function getAuthUser(request?: Request): Promise<AuthUserInfo | null> {
+export async function getAuthUser(_request?: Request): Promise<AuthUserInfo | null> {
+  void _request
   try {
     const supabase = await createServerSupabase()
     const { data: { user }, error: authErr } = await supabase.auth.getUser()

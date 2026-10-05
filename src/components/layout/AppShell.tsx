@@ -11,8 +11,8 @@ interface AppShellProps {
 }
 
 export function AppShell({ children }: AppShellProps) {
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [complianceOpen, setComplianceOpen] = useState(false)
+  const [, setSearchOpen] = useState(false)
+  const [, setComplianceOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   // Global Keyboard Shortcut: ⌘K or Ctrl+K for Search

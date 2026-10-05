@@ -14,13 +14,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
-    setMounted(true)
-    const saved = localStorage.getItem('harcoutian_theme')
-    if (saved) {
-      setTheme(saved)
-    } else if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
-      setTheme('dark')
-    }
+    const frame = window.requestAnimationFrame(() => {
+      setMounted(true)
+      const saved = localStorage.getItem('harcoutian_theme')
+      if (saved) {
+        setTheme(saved)
+      } else if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
+        setTheme('dark')
+      }
+    })
+    return () => window.cancelAnimationFrame(frame)
   }, [])
 
   useEffect(() => {

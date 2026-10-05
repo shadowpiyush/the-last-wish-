@@ -12,7 +12,6 @@ import {
   ChevronDown,
   ChevronUp,
   Layers,
-  CheckCircle2,
   Info,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
@@ -151,11 +150,11 @@ export function CurriculumClient({
   // When selectedBranch changes, fetch subjects
   useEffect(() => {
     if (!selectedBranch) {
-      setSubjects([])
       return
     }
-    setLoading(true)
-    supabase
+    void Promise.resolve().then(() => {
+      setLoading(true)
+      return supabase
       .from('subjects')
       .select('id, subject_code, subject_name, credits, hours, category, semester_number, year_number')
       .eq('branch_id', selectedBranch)
@@ -165,6 +164,7 @@ export function CurriculumClient({
         setSubjects(data || [])
         setLoading(false)
       })
+    })
   }, [selectedBranch]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentProg = programs.find((p) => p.id === selectedProgram)
@@ -487,7 +487,7 @@ export function CurriculumClient({
                   <button
                     key={trk.id}
                     type="button"
-                    onClick={() => setBbaTrackFilter(trk.id as any)}
+                    onClick={() => setBbaTrackFilter(trk.id as typeof bbaTrackFilter)}
                     style={{
                       padding: '0.3rem 0.65rem',
                       fontSize: '0.75rem',
@@ -726,4 +726,3 @@ export function CurriculumClient({
     </div>
   )
 }
-

@@ -14,7 +14,7 @@ export async function POST(request: Request) {
 
     // 2. Validate request payload
     const body = await request.json()
-    const { title, fileName, fileSize, contentType, description, author } = body
+    const { title, fileName, fileSize, contentType, author } = body
 
     if (!title || typeof title !== 'string' || !title.trim()) {
       return NextResponse.json({ error: 'eBook title is required.' }, { status: 400 })

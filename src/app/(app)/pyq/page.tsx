@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic'
 
 import type { Metadata } from 'next'
 import { createClient } from '@/lib/supabase/server'
-import { FileCheck, Calendar } from 'lucide-react'
+import { Calendar, FileCheck } from 'lucide-react'
 
 export const metadata: Metadata = {
   title: 'Previous Year Questions',
@@ -21,8 +21,6 @@ export default async function PYQPage() {
     .eq('status', 'published')
     .order('exam_year', { ascending: false })
     .limit(50)
-
-  const examTypes = ['All', 'Mid-Sem', 'End-Sem', 'Class Test', 'Carry-Over']
 
   return (
     <div style={{ padding: '2rem 1.5rem' }}>

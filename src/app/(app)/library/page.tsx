@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic'
 
 import type { Metadata } from 'next'
 import { createClient } from '@/lib/supabase/server'
-import { LibraryClient } from './LibraryClient'
+import { LibraryClient, type BookItem } from './LibraryClient'
 
 export const metadata: Metadata = {
   title: 'Digital Library',
@@ -19,7 +19,7 @@ export default async function LibraryPage() {
   ])
 
   // 2. Fetch books with joined academic mappings (with fallback if table not yet created)
-  let books: any[] = []
+  let books: BookItem[] = []
   try {
     const { data, error } = await supabase
       .from('library_books')
@@ -50,9 +50,9 @@ export default async function LibraryPage() {
         `)
         .order('title')
         .limit(150)
-      books = fallbackData || []
+      books = (fallbackData || []) as unknown as BookItem[]
     } else {
-      books = data || []
+      books = (data || []) as unknown as BookItem[]
     }
   } catch {
     const { data: fallbackData } = await supabase
@@ -65,7 +65,7 @@ export default async function LibraryPage() {
       `)
       .order('title')
       .limit(150)
-    books = fallbackData || []
+    books = (fallbackData || []) as unknown as BookItem[]
   }
 
   return (

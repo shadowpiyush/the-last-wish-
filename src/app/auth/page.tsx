@@ -80,7 +80,7 @@ function AuthPageInner() {
     const errDesc = searchParams.get('error_description')
     if (errDesc || errParam) {
       const decoded = decodeURIComponent(errDesc || errParam || '')
-      setError(decoded)
+      void Promise.resolve().then(() => setError(decoded))
     }
 
     if (typeof window !== 'undefined' && window.location.hash) {
@@ -88,7 +88,7 @@ function AuthPageInner() {
       const hashParams = new URLSearchParams(hash)
       const hashErr = hashParams.get('error_description') || hashParams.get('error')
       if (hashErr) {
-        setError(decodeURIComponent(hashErr))
+        void Promise.resolve().then(() => setError(decodeURIComponent(hashErr)))
         window.history.replaceState(null, '', window.location.pathname + window.location.search)
       }
     }
@@ -97,13 +97,12 @@ function AuthPageInner() {
   // Redirect already-authenticated users based on server-side role resolution
   useEffect(() => {
     if (user && !authLoading) {
-      setRedirecting(true)
       const explicitRedirect = searchParams.get('redirect')
       const safeRedirect = sanitizeInternalPath(explicitRedirect, '')
       const target = safeRedirect || (profile?.role === 'admin' ? '/admin' : '/dashboard')
-      window.location.href = target
+      router.replace(target)
     }
-  }, [user, profile, authLoading, searchParams])
+  }, [user, profile, authLoading, searchParams, router])
 
   // Fetch programs and branches for registration
   useEffect(() => {
@@ -246,7 +245,7 @@ function AuthPageInner() {
 
   // ==================== LOADING / REDIRECT STATE ====================
 
-  if (authLoading || redirecting) {
+  if (authLoading || redirecting || Boolean(user && !authLoading)) {
     return (
       <div className="auth-page-wrapper">
         <div className="glass-card auth-loading-card">
@@ -258,7 +257,7 @@ function AuthPageInner() {
               Welcome to <span className="text-gradient">Harcoutian Hub</span>
             </h2>
             <p className="auth-loading-subtitle">
-              {redirecting ? 'Academic session confirmed! Opening your portal...' : 'Checking session...'}
+              {redirecting || user ? 'Academic session confirmed! Opening your portal...' : 'Checking session...'}
             </p>
           </div>
         </div>

@@ -53,9 +53,10 @@ export async function GET(request: Request) {
           })
           const r2Url = await getSignedUrl(r2Client, command, { expiresIn: 3600 })
           return NextResponse.json({ success: true, url: r2Url, provider: 'r2' })
-        } catch (r2Err: any) {
+        } catch (r2Err: unknown) {
           // If object does not exist in R2, gracefully fall back to Supabase storage
-          console.warn(`R2 HeadObject check for "${path}" not in R2 (${r2Err.message || 'not found'}). Falling back to Supabase storage.`)
+          const message = r2Err instanceof Error ? r2Err.message : 'not found'
+          console.warn(`R2 HeadObject check for "${path}" not in R2 (${message}). Falling back to Supabase storage.`)
         }
       }
     }

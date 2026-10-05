@@ -6,6 +6,7 @@ import { useAuth } from '@/components/providers/AuthProvider'
 import { AppShell } from '@/components/layout/AppShell'
 import { Loader2 } from 'lucide-react'
 import { sanitizeInternalPath } from '@/lib/auth/url'
+import { isProfileComplete } from '@/lib/auth/profile'
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, profile, loading } = useAuth()
@@ -18,7 +19,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         const safePath = sanitizeInternalPath(pathname, '')
         const redirectUrl = safePath ? `/auth?redirect=${encodeURIComponent(safePath)}` : '/auth'
         router.replace(redirectUrl)
-      } else if (profile && (!profile.mobile_number || !profile.program_id)) {
+      } else if (profile && !isProfileComplete(profile)) {
         router.replace('/complete-profile')
       }
     }
@@ -46,7 +47,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   // If not authenticated or profile incomplete, render nothing while redirect occurs
-  if (!user || (profile && (!profile.mobile_number || !profile.program_id))) {
+  if (!user || (profile && !isProfileComplete(profile))) {
     return null
   }
 

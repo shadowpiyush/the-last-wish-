@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import {
   BookOpen,
@@ -54,6 +54,10 @@ interface SyllabusUnit {
   topics: SyllabusTopic[]
 }
 
+interface SyllabusUnitRow extends Omit<SyllabusUnit, 'topics'> {
+  syllabus_topics: SyllabusTopic[] | null
+}
+
 interface RelatedNote {
   id: string
   title: string
@@ -99,7 +103,7 @@ export function SyllabusClient({
   defaultBranch,
   defaultSemester,
 }: SyllabusClientProps) {
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
 
   const [programs] = useState<Program[]>(initialPrograms)
   const [branches, setBranches] = useState<Branch[]>(initialBranches)
@@ -115,14 +119,10 @@ export function SyllabusClient({
 
   const currentProg = programs.find((p) => p.id === selectedProgram)
   const totalSems = currentProg?.total_semesters || 8
-  const isBtech = currentProg?.short_code === 'B.Tech'
 
   // Fetch branches when program changes
   useEffect(() => {
     if (!selectedProgram) return
-    if (currentProg && selectedSemester > currentProg.total_semesters) {
-      setSelectedSemester(1)
-    }
     supabase
       .from('branches')
       .select('*')
@@ -135,15 +135,15 @@ export function SyllabusClient({
           setSelectedBranch(list[0].id)
         }
       })
-  }, [selectedProgram]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedProgram, selectedBranch, supabase])
 
   // Fetch subjects when branch/semester changes
   useEffect(() => {
     if (!selectedBranch || !selectedSemester) return
-    setLoading(true)
-    setSyllabusDetail(null)
-
-    supabase
+    void Promise.resolve().then(() => {
+      setLoading(true)
+      setSyllabusDetail(null)
+      return supabase
       .from('subjects')
       .select('id, subject_code, subject_name, credits, hours, category')
       .eq('branch_id', selectedBranch)
@@ -155,7 +155,8 @@ export function SyllabusClient({
         setSelectedSubjectId(list[0]?.id ?? null)
         setLoading(false)
       })
-  }, [selectedBranch, selectedSemester]) // eslint-disable-line react-hooks/exhaustive-deps
+    })
+  }, [selectedBranch, selectedSemester, supabase])
 
   // Fetch syllabus detail when subject changes
   const fetchSyllabus = useCallback(
@@ -176,9 +177,9 @@ export function SyllabusClient({
       }
 
       // Sort topics within each unit
-      const formattedUnits: SyllabusUnit[] = (units as any[]).map((u: any) => ({
+      const formattedUnits: SyllabusUnit[] = (units as unknown as SyllabusUnitRow[]).map((u) => ({
         ...u,
-        topics: [...(u.syllabus_topics || [])].sort((a: any, b: any) => a.topic_order - b.topic_order),
+        topics: [...(u.syllabus_topics || [])].sort((a, b) => a.topic_order - b.topic_order),
       }))
 
       // Fetch subject info
@@ -233,7 +234,7 @@ export function SyllabusClient({
 
   useEffect(() => {
     if (selectedSubjectId) {
-      fetchSyllabus(selectedSubjectId)
+      void Promise.resolve().then(() => fetchSyllabus(selectedSubjectId))
     }
   }, [selectedSubjectId, fetchSyllabus])
 
@@ -256,7 +257,10 @@ export function SyllabusClient({
             <button
               key={p.id}
               type="button"
-              onClick={() => setSelectedProgram(p.id)}
+              onClick={() => {
+                setSelectedProgram(p.id)
+                setSelectedSemester(1)
+              }}
               className={`btn ${isSelected ? 'maroon-texture' : 'btn-secondary'}`}
               style={{
                 padding: '0.45rem 1rem',
@@ -288,7 +292,10 @@ export function SyllabusClient({
             <select
               className="form-select"
               value={selectedProgram}
-              onChange={(e) => setSelectedProgram(e.target.value)}
+              onChange={(e) => {
+                setSelectedProgram(e.target.value)
+                setSelectedSemester(1)
+              }}
             >
               {programs.map((p) => (
                 <option key={p.id} value={p.id}>

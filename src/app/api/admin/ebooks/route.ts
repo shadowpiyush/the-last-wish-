@@ -4,6 +4,29 @@ import { verifyAdmin } from '@/lib/auth/admin'
 import { getR2Client, getR2Config } from '@/lib/r2/client'
 import { DeleteObjectCommand } from '@aws-sdk/client-s3'
 
+// The schema for optional ebook mapping tables is installed independently.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AdminSupabaseClient = ReturnType<typeof createClient<any>>
+
+interface MappingInput {
+  programId?: string | null
+  branchIds?: string[]
+  year?: number | null
+  semesters?: number[]
+  subjectIds?: string[]
+  category?: string | null
+}
+
+interface MappingRow {
+  book_id: string
+  program_id: string | null
+  branch_id: string | null
+  year_number: number | null
+  semester_number: number | null
+  subject_id: string | null
+  academic_category: string
+}
+
 export async function GET() {
   try {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -37,7 +60,7 @@ export async function GET() {
     const bookIds = bookList.map((b) => b.id)
 
     // 2. Fetch academic mappings if table exists
-    let mappingsMap: Record<string, any[]> = {}
+    const mappingsMap: Record<string, unknown[]> = {}
     if (bookIds.length > 0) {
       try {
         const { data: mappings } = await supabaseAdmin
@@ -124,8 +147,8 @@ export async function POST(request: Request) {
     }
 
     // Insert Book Record
-    let newBook: any = null
-    const bookInsertPayload: any = {
+    let newBook: { id: string } | null = null
+    const bookInsertPayload: Record<string, unknown> = {
       title: title.trim(),
       subtitle: subtitle?.trim() || null,
       author: author.trim(),
@@ -167,6 +190,8 @@ export async function POST(request: Request) {
     } else {
       newBook = inserted
     }
+
+    if (!newBook) throw new Error('Failed to create library book record.')
 
     // Insert normalized combination mappings into ebook_academic_mappings
     if (newBook && mappings.length > 0) {
@@ -230,7 +255,7 @@ export async function PUT(request: Request) {
     }
 
     // Update book details
-    const updatePayload: any = {
+    const updatePayload: Record<string, unknown> = {
       title: title.trim(),
       subtitle: subtitle?.trim() || null,
       author: author.trim(),
@@ -346,7 +371,11 @@ export async function DELETE(request: Request) {
 /**
  * Saves normalized combination mappings for a book into ebook_academic_mappings
  */
-async function saveAcademicMappings(supabaseAdmin: any, bookId: string, mappings: any[]) {
+async function saveAcademicMappings(
+  supabaseAdmin: AdminSupabaseClient,
+  bookId: string,
+  mappings: MappingInput[],
+) {
   try {
     // 1. Delete existing mappings for this book
     await supabaseAdmin.from('ebook_academic_mappings').delete().eq('book_id', bookId)
@@ -354,7 +383,7 @@ async function saveAcademicMappings(supabaseAdmin: any, bookId: string, mappings
     if (!mappings || mappings.length === 0) return
 
     // 2. Generate combination rows
-    const rowsToInsert: any[] = []
+    const rowsToInsert: MappingRow[] = []
 
     for (const group of mappings) {
       const programId = group.programId || null

@@ -30,6 +30,15 @@ export interface UserProfile {
 
 type OAuthProvider = 'google' | 'github' | 'apple'
 
+export interface CompleteProfileParams {
+  fullName?: string
+  mobileNumber: string
+  programId: string
+  branchId: string
+  currentYear: number
+  currentSemester: number
+}
+
 interface AuthContextType {
   user: User | null
   profile: UserProfile | null
@@ -40,6 +49,7 @@ interface AuthContextType {
   signUp: (params: SignUpParams) => Promise<void>
   signOut: () => Promise<void>
   updateProfile: (data: Partial<UserProfile>) => Promise<void>
+  completeProfile: (params: CompleteProfileParams) => Promise<UserProfile>
   uploadAvatar: (file: File) => Promise<string>
   changePassword: (newPassword: string) => Promise<void>
   resetPassword: (email: string) => Promise<void>
@@ -246,6 +256,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     showToast({ type: 'info', message: 'Signed out successfully.' })
   }
 
+  const completeProfile = async (params: CompleteProfileParams): Promise<UserProfile> => {
+    if (!user) throw new Error('Not authenticated')
+
+    const res = await fetch('/api/profile/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...params,
+        fullName: params.fullName || profile?.full_name || user.user_metadata?.full_name || '',
+      }),
+    })
+
+    const data = await res.json()
+    if (!res.ok || !data.success) {
+      const errMsg = data.error || 'Failed to complete profile'
+      showToast({ type: 'error', message: errMsg })
+      throw new Error(errMsg)
+    }
+
+    const updatedProfile = data.profile as UserProfile
+    // Authoritatively set profile immediately so that route guards see it without race condition
+    setProfile(updatedProfile)
+    showToast({ type: 'success', message: 'Profile completed successfully!' })
+    return updatedProfile
+  }
+
   const updateProfile = async (data: Partial<UserProfile>) => {
     if (!user) throw new Error('Not authenticated')
 
@@ -257,6 +293,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error(errMsg)
       }
       data.mobile_number = mobileCheck.normalized!
+    }
+
+    // If all academic onboarding fields are present, route through atomic server completion
+    if (data.program_id && data.branch_id && data.mobile_number) {
+      await completeProfile({
+        fullName: data.full_name,
+        mobileNumber: data.mobile_number,
+        programId: data.program_id,
+        branchId: data.branch_id,
+        currentYear: data.current_year ?? 1,
+        currentSemester: data.current_semester ?? 1,
+      })
+      return
     }
 
     const { error } = await supabase
@@ -372,6 +421,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signUp,
         signOut,
         updateProfile,
+        completeProfile,
         uploadAvatar,
         changePassword,
         resetPassword,

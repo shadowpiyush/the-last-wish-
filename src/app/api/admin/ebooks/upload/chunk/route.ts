@@ -99,10 +99,10 @@ export async function POST(request: NextRequest) {
       partNumber,
       etag: partResult.ETag,
     })
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Error uploading chunk fallback to R2:', error)
     return NextResponse.json(
-      { error: error.message || 'Failed to upload chunk to Cloudflare R2.' },
+      { error: error instanceof Error ? error.message : 'Failed to upload chunk to Cloudflare R2.' },
       { status: 500 }
     )
   }
