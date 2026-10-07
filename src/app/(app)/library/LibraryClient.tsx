@@ -11,6 +11,8 @@ import {
   GraduationCap,
   Globe,
   Plus,
+  Loader2,
+  Maximize2,
 } from 'lucide-react'
 import Link from 'next/link'
 import { useAuth } from '@/components/providers/AuthProvider'
@@ -91,6 +93,7 @@ export function LibraryClient({ initialBooks, programs = [], branches = [] }: Li
   const [selectedSemester, setSelectedSemester] = useState<string>('all')
   const [readingLoading, setReadingLoading] = useState<string | null>(null)
   const [activeReadingBook, setActiveReadingBook] = useState<{ book: BookItem; url: string } | null>(null)
+  const [readerIframeLoading, setReaderIframeLoading] = useState(true)
 
   // Prevent download and print keyboard shortcuts while reader is open
   useEffect(() => {
@@ -175,6 +178,7 @@ export function LibraryClient({ initialBooks, programs = [], branches = [] }: Li
       const res = await fetch(`/api/storage/view-url?bucket=ebooks&path=${encodeURIComponent(book.ebook_file_path)}`)
       const data = await res.json()
       if (data.url) {
+        setReaderIframeLoading(true)
         setActiveReadingBook({ book, url: data.url })
       } else {
         alert(data.error || 'Failed to open eBook')
@@ -607,6 +611,16 @@ export function LibraryClient({ initialBooks, programs = [], branches = [] }: Li
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <a
+                  href={activeReadingBook.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-secondary"
+                  style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                  title="Open in new full screen tab"
+                >
+                  <Maximize2 size={13} /> Full Screen
+                </a>
                 <span
                   className="badge badge-neutral"
                   style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.6875rem', padding: '0.25rem 0.6rem' }}
@@ -626,8 +640,32 @@ export function LibraryClient({ initialBooks, programs = [], branches = [] }: Li
 
             {/* Embedded PDF iframe with toolbar disabled */}
             <div style={{ flex: 1, position: 'relative', background: '#161b22' }}>
+              {readerIframeLoading && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.75rem',
+                    background: '#0d1117',
+                    zIndex: 2,
+                  }}
+                >
+                  <Loader2 size={32} className="animate-spin" style={{ color: '#10b981' }} />
+                  <div style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                    Streaming eBook via Cloudflare R2...
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+                    High-speed byte-range partial stream active
+                  </div>
+                </div>
+              )}
               <iframe
                 src={`${activeReadingBook.url}#toolbar=0&navpanes=0&scrollbar=1`}
+                onLoad={() => setReaderIframeLoading(false)}
                 style={{
                   width: '100%',
                   height: '100%',

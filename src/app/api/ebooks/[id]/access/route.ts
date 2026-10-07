@@ -84,9 +84,13 @@ export async function GET(request: Request, context: RouteContext) {
       expiresIn: 3600, // 1 hour
     })
 
+    const streamUrl = `/api/storage/stream?bucket=ebooks&path=${encodeURIComponent(fileKey)}`
+
     return NextResponse.json({
       success: true,
-      url: presignedUrl,
+      url: streamUrl,
+      streamUrl,
+      directUrl: presignedUrl,
       title,
       fileKey,
       expiresIn: 3600,

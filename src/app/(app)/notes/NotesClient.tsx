@@ -10,6 +10,7 @@ import {
   BookOpen,
   X,
   Lock,
+  Maximize2,
 } from 'lucide-react'
 
 interface NoteSubject {
@@ -283,6 +284,16 @@ export function NotesClient({ initialNotes }: NotesClientProps) {
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <a
+                  href={activeReadingNote.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-secondary"
+                  style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                  title="Open in new full screen tab"
+                >
+                  <Maximize2 size={13} /> Full Screen
+                </a>
                 <span
                   className="badge badge-neutral"
                   style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.6875rem', padding: '0.25rem 0.6rem' }}
