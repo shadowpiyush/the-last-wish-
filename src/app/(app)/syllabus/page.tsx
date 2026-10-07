@@ -18,26 +18,22 @@ export const metadata: Metadata = {
 export default async function SyllabusPage() {
   const supabase = await createClient()
 
-  // Server-side fetch: programs list (used to seed the client UI)
-  const { data: programs } = await supabase
-    .from('programs')
-    .select('id, name, short_code, duration_years, total_semesters')
-    .order('name')
+  // Both lookup tables are small and public; fetch them together so the first
+  // render doesn't wait through a programs-then-branches waterfall.
+  const [{ data: programs }, { data: branches }] = await Promise.all([
+    supabase.from('programs')
+      .select('id, name, short_code, duration_years, total_semesters')
+      .order('name'),
+    supabase.from('branches')
+      .select('id, program_id, name, code')
+      .order('name'),
+  ])
 
   const allPrograms = programs || []
   const btechProgram = allPrograms.find((p) => p.short_code === 'B.Tech')
   const defaultProgram = btechProgram?.id ?? allPrograms[0]?.id ?? ''
 
-  // Server-side fetch: default branches for B.Tech
-  const { data: defaultBranches } = defaultProgram
-    ? await supabase
-        .from('branches')
-        .select('*')
-        .eq('program_id', defaultProgram)
-        .order('name')
-    : { data: [] }
-
-  const branchList = defaultBranches ?? []
+  const branchList = (branches ?? []).filter((branch) => branch.program_id === defaultProgram)
   const defaultBranch = branchList[0]?.id ?? ''
 
   return (

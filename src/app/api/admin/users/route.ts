@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server'
 import { verifyAdmin } from '@/lib/auth/admin'
 import { createClient as createAdminSupabase } from '@supabase/supabase-js'
+import { getAvatarUrl } from '@/lib/profile/avatar'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: Request) {
   try {
+    const startedAt = performance.now()
     // 1. Strict admin verification
     const authCheck = await verifyAdmin(request)
     if (!authCheck.isAdmin) {
@@ -13,7 +15,10 @@ export async function GET(request: Request) {
     }
 
     const { searchParams } = new URL(request.url)
-    const search = searchParams.get('search')?.trim() || ''
+    const rawSearch = searchParams.get('search')?.trim() || ''
+    // Keep PostgREST's OR expression structural. Search content is limited to values
+    // that cannot alter the filter grammar while retaining names, emails, and phones.
+    const search = rawSearch.replace(/[^\p{L}\p{N}@.+ _-]/gu, '').slice(0, 80)
     const branchId = searchParams.get('branchId')?.trim() || ''
     const role = searchParams.get('role')?.trim() || 'all'
     const status = searchParams.get('status')?.trim() || 'all'
@@ -32,29 +37,8 @@ export async function GET(request: Request) {
       auth: { autoRefreshToken: false, persistSession: false },
     })
 
-    // Fetch auth users to retrieve authentic email and last_sign_in_at
-    const { data: authData } = await supabaseAdmin.auth.admin.listUsers({
-      page: 1,
-      perPage: 1000,
-    })
-
-    const authMap = new Map<string, { email: string; last_sign_in_at: string | null; phone: string | null }>()
-    const matchingEmailUserIds: string[] = []
-
-    if (authData?.users) {
-      for (const u of authData.users) {
-        authMap.set(u.id, {
-          email: u.email || '',
-          last_sign_in_at: u.last_sign_in_at || null,
-          phone: u.phone || null,
-        })
-        if (search && u.email && u.email.toLowerCase().includes(search.toLowerCase())) {
-          matchingEmailUserIds.push(u.id)
-        }
-      }
-    }
-
-    // Build database query for profiles
+    // Query only the current directory page. The email and login projection is kept
+    // on profiles by the migration, so this no longer loads every auth account first.
     let query = supabaseAdmin
       .from('profiles')
       .select(
@@ -62,7 +46,11 @@ export async function GET(request: Request) {
         id,
         full_name,
         mobile_number,
+        email,
+        email_confirmed_at,
         profile_picture_url,
+        profile_picture_path,
+        profile_picture_version,
         role,
         status,
         program_id,
@@ -101,21 +89,16 @@ export async function GET(request: Request) {
       query = query.eq('status', status)
     }
 
-    // Filter by search term (across name, mobile number, or email matches)
+    // Filter by search term (across directory-safe columns)
     if (search) {
-      if (matchingEmailUserIds.length > 0) {
-        query = query.or(
-          `full_name.ilike.%${search}%,mobile_number.ilike.%${search}%,id.in.(${matchingEmailUserIds.join(',')})`
-        )
-      } else {
-        query = query.or(`full_name.ilike.%${search}%,mobile_number.ilike.%${search}%`)
-      }
+      query = query.or(`full_name.ilike.*${search}*,email.ilike.*${search}*,mobile_number.ilike.*${search}*`)
     }
 
     // Sorting & Pagination
     query = query.order('created_at', { ascending: false }).range(offset, offset + pageSize - 1)
 
     const { data: profiles, count, error: profileErr } = await query
+    const databaseDuration = performance.now() - startedAt
 
     if (profileErr) {
       console.error('Error fetching admin users:', profileErr)
@@ -124,16 +107,20 @@ export async function GET(request: Request) {
 
     // Format safe response (strictly non-sensitive user info)
     const formattedUsers = (profiles || []).map((p: Record<string, unknown>) => {
-      const authInfo = authMap.get(p.id as string)
       const branchObj = p.branches as { id: string; name: string; code: string } | null
       const programObj = p.programs as { id: string; name: string; short_code: string } | null
 
       return {
         id: p.id,
         full_name: p.full_name || 'Anonymous User',
-        email: authInfo?.email || null,
-        mobile_number: p.mobile_number || authInfo?.phone || null,
-        profile_picture_url: p.profile_picture_url || null,
+        email: p.email || null,
+        mobile_number: p.mobile_number || null,
+        profile_picture_url: getAvatarUrl({
+          id: p.id as string,
+          profile_picture_path: p.profile_picture_path as string | null,
+          profile_picture_version: p.profile_picture_version as string | null,
+          profile_picture_url: p.profile_picture_url as string | null,
+        }),
         role: p.role || 'student',
         status: p.status || 'active',
         branch_id: p.branch_id,
@@ -145,7 +132,7 @@ export async function GET(request: Request) {
         current_semester: p.current_semester || 1,
         created_at: p.created_at,
         updated_at: p.updated_at,
-        last_sign_in_at: authInfo?.last_sign_in_at || p.last_login_at || null,
+        last_sign_in_at: p.last_login_at || null,
       }
     })
 
@@ -162,6 +149,11 @@ export async function GET(request: Request) {
         totalPages,
         hasNextPage: page < totalPages,
         hasPrevPage: page > 1,
+      },
+    }, {
+      headers: {
+        'Server-Timing': `directory-auth;dur=${databaseDuration.toFixed(1)}, directory-total;dur=${(performance.now() - startedAt).toFixed(1)}`,
+        'Cache-Control': 'private, no-store',
       },
     })
   } catch (err: unknown) {

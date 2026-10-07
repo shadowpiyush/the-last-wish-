@@ -171,6 +171,39 @@ export interface AdminUserItem {
   created_at: string
   updated_at: string
   last_sign_in_at: string | null
+  email_confirmed_at?: string | null
+  profile_picture_mime_type?: string | null
+  profile_picture_width?: number | null
+  profile_picture_height?: number | null
+  profile_picture_uploaded_at?: string | null
+}
+
+function UserAvatar({ user, size = 36 }: { user: AdminUserItem; size?: number }) {
+  const [failed, setFailed] = useState(false)
+  const initial = user.full_name?.charAt(0).toUpperCase() || 'U'
+  const background = user.role === 'admin' ? 'rgba(79, 70, 229, 0.15)' : 'rgba(16, 185, 129, 0.15)'
+  const color = user.role === 'admin' ? '#6366f1' : '#10b981'
+
+  if (user.profile_picture_url && !failed) {
+    return (
+      <Image
+        src={user.profile_picture_url.replace(/([?&])size=\d+/, `$1size=${size}`)}
+        alt={`${user.full_name}'s profile picture`}
+        width={size}
+        height={size}
+        loading="lazy"
+        unoptimized
+        onError={() => setFailed(true)}
+        style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', flexShrink: 0, background }}
+      />
+    )
+  }
+
+  return (
+    <div style={{ width: size, height: size, borderRadius: '50%', background, color, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: size <= 36 ? '0.8125rem' : '1.125rem', flexShrink: 0 }}>
+      {initial}
+    </div>
+  )
 }
 
 // Helper to group database mappings into editable UI groups
@@ -861,16 +894,12 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
   const [usersBranchFilter, setUsersBranchFilter] = useState('all')
   const [usersRoleFilter, setUsersRoleFilter] = useState('all')
   const [usersStatusFilter, setUsersStatusFilter] = useState('all')
-  const usersSearchRef = useRef(usersSearch)
   const [usersPage, setUsersPage] = useState(1)
   const [usersTotalCount, setUsersTotalCount] = useState(0)
   const [usersTotalPages, setUsersTotalPages] = useState(1)
   const [selectedUserDetail, setSelectedUserDetail] = useState<AdminUserItem | null>(null)
+  const [userDetailLoading, setUserDetailLoading] = useState(false)
   const [updatingUserStatus, setUpdatingUserStatus] = useState(false)
-
-  useEffect(() => {
-    usersSearchRef.current = usersSearch
-  }, [usersSearch])
 
   // Fetch Users Function
   const fetchUsers = useCallback(async (page = 1, searchQuery = '') => {
@@ -899,17 +928,32 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
     }
   }, [usersBranchFilter, usersRoleFilter, usersStatusFilter])
 
-  // Trigger user fetch when tab is opened or filters change
+  // A short debounce keeps directory search responsive without querying on every keystroke.
   useEffect(() => {
-    if (activeTab === 'users') {
-      void Promise.resolve().then(() => fetchUsers(1, usersSearchRef.current))
-    }
-  }, [activeTab, usersBranchFilter, usersRoleFilter, usersStatusFilter, fetchUsers])
+    if (activeTab !== 'users') return
+    const timer = window.setTimeout(() => void fetchUsers(1, usersSearch), usersSearch ? 300 : 0)
+    return () => window.clearTimeout(timer)
+  }, [activeTab, usersSearch, fetchUsers])
 
   // Handle Search submit
   const handleUserSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     fetchUsers(1, usersSearch)
+  }
+
+  const openUserDetail = async (user: AdminUserItem) => {
+    setSelectedUserDetail(user)
+    setUserDetailLoading(true)
+    try {
+      const response = await fetch(`/api/admin/users/${encodeURIComponent(user.id)}`)
+      const data = await response.json().catch(() => null) as { user?: AdminUserItem; error?: string } | null
+      if (!response.ok || !data?.user) throw new Error(data?.error || 'Unable to load user profile.')
+      setSelectedUserDetail(data.user)
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Unable to load user profile.')
+    } finally {
+      setUserDetailLoading(false)
+    }
   }
 
   // Handle User Status toggle (Active <-> Blocked)
@@ -1902,23 +1946,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                         {/* User Identity */}
                         <td style={{ padding: '0.75rem 0.5rem' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <div
-                              style={{
-                                width: 34,
-                                height: 34,
-                                borderRadius: '50%',
-                                background: user.role === 'admin' ? 'rgba(79, 70, 229, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                                color: user.role === 'admin' ? '#6366f1' : '#10b981',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontWeight: 700,
-                                fontSize: '0.8125rem',
-                                flexShrink: 0,
-                              }}
-                            >
-                              {user.full_name?.charAt(0).toUpperCase() || 'U'}
-                            </div>
+                            <UserAvatar user={user} size={34} />
                             <div>
                               <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{user.full_name}</div>
                               <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', marginTop: 1 }}>
@@ -1982,7 +2010,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                         <td style={{ padding: '0.75rem 0.5rem', textAlign: 'right' }}>
                           <button
                             type="button"
-                            onClick={() => setSelectedUserDetail(user)}
+                            onClick={() => void openUserDetail(user)}
                             className="btn btn-secondary"
                             style={{
                               padding: '0.3rem 0.65rem',
@@ -2084,22 +2112,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
             {/* Modal Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div
-                  style={{
-                    width: 48,
-                    height: 48,
-                    borderRadius: '50%',
-                    background: selectedUserDetail.role === 'admin' ? 'rgba(79, 70, 229, 0.2)' : 'rgba(16, 185, 129, 0.2)',
-                    color: selectedUserDetail.role === 'admin' ? '#6366f1' : '#10b981',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontWeight: 800,
-                    fontSize: '1.125rem',
-                  }}
-                >
-                  {selectedUserDetail.full_name?.charAt(0).toUpperCase() || 'U'}
-                </div>
+                <UserAvatar user={selectedUserDetail} size={48} />
                 <div>
                   <h3 style={{ fontSize: '1.125rem', fontWeight: 800, color: 'var(--text-primary)' }}>
                     {selectedUserDetail.full_name}
@@ -2201,7 +2214,20 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                     : 'No session timestamp recorded'}
                 </div>
               </div>
+
+              <div style={{ background: 'var(--bg-secondary)', padding: '0.75rem', borderRadius: 'var(--radius-sm)' }}>
+                <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>EMAIL VERIFICATION</div>
+                <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginTop: 3 }}>
+                  {selectedUserDetail.email_confirmed_at ? 'Verified' : 'Not verified'}
+                </div>
+              </div>
             </div>
+
+            {userDetailLoading && (
+              <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)', fontSize: '0.8125rem', marginTop: '-0.5rem', marginBottom: '1rem' }}>
+                <Loader2 size={14} className="animate-spin" /> Loading the full profile…
+              </div>
+            )}
 
             {/* User ID Field with Copy */}
             <div

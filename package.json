@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "npm run test:registration && npm run test:profile-image && npm run test:profile-admin",
+    "test:registration": "node --test scripts/test-registration-validation.mjs",
+    "test:profile-image": "node --experimental-strip-types --test scripts/test-profile-image-validation.ts",
+    "test:profile-admin": "node --env-file=.env.local scripts/test-profile-picture-and-admin.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",

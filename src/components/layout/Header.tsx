@@ -30,6 +30,7 @@ export function Header({ onOpenSearch, onToggleSidebar, onOpenCompliance }: Head
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const [scrolled, setScrolled] = useState(false)
+  const [failedAvatarSrc, setFailedAvatarSrc] = useState<string | null>(null)
   const router = useRouter()
 
   // Close dropdown on outside click
@@ -154,13 +155,14 @@ export function Header({ onOpenSearch, onToggleSidebar, onOpenCompliance }: Head
               aria-expanded={menuOpen}
             >
               <div style={{ position: 'relative' }}>
-                {profile?.profile_picture_url ? (
+                {profile?.profile_picture_url && profile.profile_picture_url !== failedAvatarSrc ? (
                   <Image
                     src={profile.profile_picture_url}
                     alt={displayName}
                     width={30}
                     height={30}
                     unoptimized
+                    onError={() => setFailedAvatarSrc(profile.profile_picture_url)}
                     style={{
                       width: 30,
                       height: 30,

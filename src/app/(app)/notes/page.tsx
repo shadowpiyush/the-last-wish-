@@ -12,22 +12,15 @@ export const metadata: Metadata = {
 export default async function NotesPage() {
   const supabase = await createClient()
 
-  // Fetch programs for the filter
-  const { data: programs } = await supabase
-    .from('programs')
-    .select('id, name, short_code')
-    .order('name')
-
-  // Fetch published notes with subject info
-  const { data: notes } = await supabase
-    .from('notes')
-    .select(`
+  // These independent reads can share one round trip instead of delaying notes
+  // until the program filter query has completed.
+  const [{ data: programs }, { data: notes }] = await Promise.all([
+    supabase.from('programs').select('id, name, short_code').order('name'),
+    supabase.from('notes').select(`
       id, title, description, file_path, file_type, file_size, view_count, created_at,
       subjects (id, subject_code, subject_name)
-    `)
-    .eq('status', 'published')
-    .order('created_at', { ascending: false })
-    .limit(50)
+    `).eq('status', 'published').order('created_at', { ascending: false }).limit(50),
+  ])
 
   return (
     <div style={{ padding: '2rem 1.5rem' }}>

@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Image from 'next/image'
-import { User, Mail, Phone, GraduationCap, Lock, Camera, Save, LogOut, Shield, CheckCircle2 } from 'lucide-react'
+import { User, Mail, Phone, GraduationCap, Lock, Camera, Save, LogOut, Shield, CheckCircle2, Trash2, Upload, Loader2 } from 'lucide-react'
 import { useAuth } from '@/components/providers/AuthProvider'
 import { createClient } from '@/lib/supabase/client'
 import { validateAndNormalizeIndianMobile } from '@/lib/validation/mobile'
@@ -26,7 +26,7 @@ interface BranchItem {
 export default function ProfilePage() {
   const router = useRouter()
   const supabase = createClient()
-  const { user, profile, signOut, changePassword, updateProfile, refreshProfile, loading: authLoading } = useAuth()
+  const { user, profile, signOut, changePassword, updateProfile, refreshProfile, uploadAvatar, removeAvatar, loading: authLoading } = useAuth()
 
   const [fullName, setFullName] = useState(profile?.full_name || '')
   const [mobile, setMobile] = useState(profile?.mobile_number || '')
@@ -40,6 +40,11 @@ export default function ProfilePage() {
 
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
+  const avatarInputRef = useRef<HTMLInputElement>(null)
+  const [avatarFile, setAvatarFile] = useState<File | null>(null)
+  const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null)
+  const [avatarUploading, setAvatarUploading] = useState(false)
+  const [failedAvatarSrc, setFailedAvatarSrc] = useState<string | null>(null)
 
   // Password change
   const [newPassword, setNewPassword] = useState('')
@@ -62,18 +67,23 @@ export default function ProfilePage() {
     }
   }, [profile])
 
+  useEffect(() => () => {
+    if (avatarPreviewUrl) URL.revokeObjectURL(avatarPreviewUrl)
+  }, [avatarPreviewUrl])
+
   // Load programs and branches
   useEffect(() => {
     async function loadData() {
-      const { data: progs } = await supabase
-        .from('programs')
-        .select('id, name, short_code, duration_years, total_semesters')
-        .order('name')
-
-      const { data: brs } = await supabase
-        .from('branches')
-        .select('id, program_id, name, code')
-        .order('name')
+      const [{ data: progs }, { data: brs }] = await Promise.all([
+        supabase
+          .from('programs')
+          .select('id, name, short_code, duration_years, total_semesters')
+          .order('name'),
+        supabase
+          .from('branches')
+          .select('id, program_id, name, code')
+          .order('name'),
+      ])
 
       if (progs) setPrograms(progs)
       if (brs) setBranches(brs)
@@ -117,6 +127,7 @@ export default function ProfilePage() {
       return
     }
 
+    setSaving(true)
     try {
       await updateProfile({
         full_name: fullName.trim(),
@@ -132,6 +143,56 @@ export default function ProfilePage() {
       setMessage(`Error: ${err instanceof Error ? err.message : 'Failed to update profile'}`)
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleAvatarSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    const supportedTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
+    if (!supportedTypes.has(file.type) || file.size > 4 * 1024 * 1024) {
+      setMessage('Error: Choose a JPG, PNG, or WebP image up to 4 MB.')
+      event.target.value = ''
+      return
+    }
+    setMessage('')
+    setAvatarFile(file)
+    setAvatarPreviewUrl(URL.createObjectURL(file))
+  }
+
+  const handleAvatarUpload = async () => {
+    if (!avatarFile) {
+      avatarInputRef.current?.click()
+      return
+    }
+    setAvatarUploading(true)
+    setMessage('')
+    try {
+      await uploadAvatar(avatarFile)
+      setAvatarFile(null)
+      setAvatarPreviewUrl(null)
+      if (avatarInputRef.current) avatarInputRef.current.value = ''
+      setMessage('Profile picture updated successfully!')
+    } catch (error) {
+      setMessage(`Error: ${error instanceof Error ? error.message : 'Unable to upload profile picture.'}`)
+    } finally {
+      setAvatarUploading(false)
+    }
+  }
+
+  const handleAvatarRemove = async () => {
+    setAvatarUploading(true)
+    setMessage('')
+    try {
+      await removeAvatar()
+      setAvatarFile(null)
+      setAvatarPreviewUrl(null)
+      if (avatarInputRef.current) avatarInputRef.current.value = ''
+      setMessage('Profile picture removed.')
+    } catch (error) {
+      setMessage(`Error: ${error instanceof Error ? error.message : 'Unable to remove profile picture.'}`)
+    } finally {
+      setAvatarUploading(false)
     }
   }
 
@@ -219,33 +280,42 @@ export default function ProfilePage() {
             flexShrink: 0,
             position: 'relative',
           }}>
-            {profile?.profile_picture_url ? (
+            {avatarPreviewUrl || (profile?.profile_picture_url && profile.profile_picture_url !== failedAvatarSrc) ? (
               <Image
-                src={profile.profile_picture_url}
-                alt="Avatar"
+                src={avatarPreviewUrl || profile?.profile_picture_url || ''}
+                alt="Profile picture"
                 width={120}
                 height={120}
+                unoptimized
+                onError={() => {
+                  if (profile?.profile_picture_url) setFailedAvatarSrc(profile.profile_picture_url)
+                }}
                 style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }}
               />
             ) : (
               (profile?.full_name || user.email || 'U').charAt(0).toUpperCase()
             )}
-            <div style={{
-              position: 'absolute',
-              bottom: -2,
-              right: -2,
-              width: 24,
-              height: 24,
-              borderRadius: '50%',
-              background: 'var(--bg-card)',
-              border: '2px solid var(--border-light)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-            }}>
+            <button
+              type="button"
+              onClick={() => avatarInputRef.current?.click()}
+              aria-label="Choose a profile picture"
+              style={{
+                position: 'absolute',
+                bottom: -2,
+                right: -2,
+                width: 28,
+                height: 28,
+                borderRadius: '50%',
+                background: 'var(--bg-card)',
+                border: '2px solid var(--border-light)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+              }}
+            >
               <Camera size={11} color="var(--text-tertiary)" />
-            </div>
+            </button>
           </div>
           <div>
             <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>
@@ -270,6 +340,34 @@ export default function ProfilePage() {
                 Year {profile?.current_year || currentYear} · Sem {profile?.current_semester || currentSemester}
               </span>
             </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                capture="user"
+                onChange={handleAvatarSelect}
+                style={{ display: 'none' }}
+              />
+              <button type="button" className="btn btn-secondary" onClick={() => avatarInputRef.current?.click()} disabled={avatarUploading} style={{ fontSize: '0.75rem', padding: '0.45rem 0.7rem' }}>
+                <Camera size={14} /> {profile?.profile_picture_url || avatarPreviewUrl ? 'Change photo' : 'Upload photo'}
+              </button>
+              {avatarFile && (
+                <button type="button" className="btn btn-primary" onClick={handleAvatarUpload} disabled={avatarUploading} style={{ fontSize: '0.75rem', padding: '0.45rem 0.7rem' }}>
+                  {avatarUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                  {avatarUploading ? 'Uploading…' : 'Save photo'}
+                </button>
+              )}
+              {profile?.profile_picture_url && !avatarFile && (
+                <button type="button" className="btn btn-secondary" onClick={handleAvatarRemove} disabled={avatarUploading} style={{ fontSize: '0.75rem', padding: '0.45rem 0.7rem' }}>
+                  {avatarUploading ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                  Remove
+                </button>
+              )}
+            </div>
+            <p style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', marginTop: 8 }}>
+              JPG, PNG, or WebP up to 4 MB. Your selected image is previewed before it is saved.
+            </p>
           </div>
         </div>
 

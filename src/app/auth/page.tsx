@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, useRef, Suspense } from 'react'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import {
@@ -51,6 +51,11 @@ function AuthPageInner() {
   const [redirecting, setRedirecting] = useState(false)
   const [error, setError] = useState('')
   const [successMessage, setSuccessMessage] = useState('')
+  const errorBannerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (error) errorBannerRef.current?.focus()
+  }, [error])
 
   // Login form
   const [loginEmail, setLoginEmail] = useState('')
@@ -65,6 +70,9 @@ function AuthPageInner() {
   // Academic program & branch selection
   const [programsList, setProgramsList] = useState<ProgramItem[]>([])
   const [branchesList, setBranchesList] = useState<BranchItem[]>([])
+  const [academicOptionsLoading, setAcademicOptionsLoading] = useState(false)
+  const [academicOptionsError, setAcademicOptionsError] = useState('')
+  const [academicLoadAttempt, setAcademicLoadAttempt] = useState(0)
   const [regProgramId, setRegProgramId] = useState<string>('')
   const [regBranchId, setRegBranchId] = useState<string>('')
   const [regYear, setRegYear] = useState<number>(1)
@@ -104,40 +112,59 @@ function AuthPageInner() {
     }
   }, [user, profile, authLoading, searchParams, router])
 
-  // Fetch programs and branches for registration
+  // Academic options are only needed on the registration tab. Load both in parallel
+  // so the sign-in screen avoids two unnecessary requests and registration avoids a waterfall.
   useEffect(() => {
+    if (step !== 'register' || programsList.length > 0) return
+
+    let cancelled = false
     const supabase = createClient()
     async function loadProgramsAndBranches() {
+      setAcademicOptionsLoading(true)
+      setAcademicOptionsError('')
       try {
-        const { data: progs } = await supabase
-          .from('programs')
-          .select('id, name, short_code, duration_years, total_semesters')
-          .order('name')
+        const [programResult, branchResult] = await Promise.all([
+          supabase.from('programs')
+            .select('id, name, short_code, duration_years, total_semesters')
+            .order('name'),
+          supabase.from('branches')
+            .select('id, program_id, name, code')
+            .order('name'),
+        ])
 
-        const { data: branches } = await supabase
-          .from('branches')
-          .select('id, program_id, name, code')
-          .order('name')
+        if (programResult.error || branchResult.error) {
+          throw new Error('Academic options could not be loaded.')
+        }
+        if (cancelled) return
 
-        if (progs && progs.length > 0) {
-          setProgramsList(progs as ProgramItem[])
-          const btech = (progs as ProgramItem[]).find((p: ProgramItem) => p.short_code === 'B.Tech') || progs[0]
-          setRegProgramId(btech.id)
+        const progs = programResult.data
+        const branches = branchResult.data
+        if (!progs?.length || !branches?.length) {
+          setAcademicOptionsError('Academic options are unavailable right now. Please retry.')
+          return
+        }
 
-          if (branches && branches.length > 0) {
-            setBranchesList(branches as BranchItem[])
-            const matching = (branches as BranchItem[]).filter((b: BranchItem) => b.program_id === btech.id)
-            if (matching.length > 0) {
-              setRegBranchId(matching[0].id)
-            }
-          }
+        setProgramsList(progs as ProgramItem[])
+        setBranchesList(branches as BranchItem[])
+        const btech = (progs as ProgramItem[]).find((p) => p.short_code === 'B.Tech') || progs[0]
+        setRegProgramId(btech.id)
+
+        const matching = (branches as BranchItem[]).filter((branch) => branch.program_id === btech.id)
+        if (matching.length > 0) {
+          setRegBranchId(matching[0].id)
         }
       } catch (err) {
-        console.error('Failed to load academic programs/branches:', err)
+        if (!cancelled) {
+          console.error('Failed to load academic programs/branches:', err)
+          setAcademicOptionsError('Academic options could not be loaded. Please retry.')
+        }
+      } finally {
+        if (!cancelled) setAcademicOptionsLoading(false)
       }
     }
-    loadProgramsAndBranches()
-  }, [])
+    void loadProgramsAndBranches()
+    return () => { cancelled = true }
+  }, [step, programsList.length, academicLoadAttempt])
 
   const handleProgramSelect = (progId: string) => {
     setRegProgramId(progId)
@@ -335,7 +362,7 @@ function AuthPageInner() {
 
           {/* Error message */}
           {error && (
-            <div className="auth-error-banner" role="alert">
+            <div className="auth-error-banner" id="auth-error" role="alert" tabIndex={-1} ref={errorBannerRef}>
               <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
               <span>{error}</span>
             </div>
@@ -450,7 +477,9 @@ function AuthPageInner() {
                     value={regName}
                     onChange={(e) => setRegName(e.target.value)}
                     required
+                    maxLength={120}
                     autoComplete="name"
+                    aria-describedby={error ? 'auth-error' : undefined}
                   />
                 </div>
               </div>
@@ -469,6 +498,7 @@ function AuthPageInner() {
                     onChange={(e) => setRegEmail(e.target.value)}
                     required
                     autoComplete="email"
+                    aria-describedby={error ? 'auth-error' : undefined}
                   />
                 </div>
               </div>
@@ -489,6 +519,9 @@ function AuthPageInner() {
                     value={regMobile}
                     onChange={(e) => setRegMobile(e.target.value)}
                     required
+                    inputMode="tel"
+                    autoComplete="tel"
+                    aria-describedby={error ? 'auth-error' : undefined}
                   />
                 </div>
               </div>
@@ -507,7 +540,9 @@ function AuthPageInner() {
                     onChange={(e) => setRegPassword(e.target.value)}
                     required
                     minLength={8}
+                    maxLength={128}
                     autoComplete="new-password"
+                    aria-describedby={error ? 'auth-error' : undefined}
                   />
                   <button
                     type="button"
@@ -531,7 +566,17 @@ function AuthPageInner() {
                   color: 'var(--color-accent)', marginBottom: '0.75rem',
                 }}>
                   <GraduationCap size={16} /> Academic Course & Branch
+                  {academicOptionsLoading && <span role="status" style={{ fontWeight: 500, color: 'var(--text-tertiary)' }}>Loading…</span>}
                 </div>
+
+                {academicOptionsError && (
+                  <div role="status" style={{ marginBottom: '0.75rem', fontSize: '0.75rem', color: 'var(--color-danger)' }}>
+                    {academicOptionsError}{' '}
+                    <button type="button" onClick={() => setAcademicLoadAttempt((attempt) => attempt + 1)} style={{ color: 'var(--color-accent)', textDecoration: 'underline' }}>
+                      Retry
+                    </button>
+                  </div>
+                )}
 
                 <div className="form-group" style={{ marginBottom: '0.75rem' }}>
                   <label className="form-label" htmlFor="reg-program" style={{ fontSize: '0.75rem' }}>Degree Program</label>
@@ -541,6 +586,8 @@ function AuthPageInner() {
                     value={regProgramId}
                     onChange={(e) => handleProgramSelect(e.target.value)}
                     style={{ fontSize: '0.8125rem', padding: '0.5rem 0.75rem' }}
+                    required
+                    aria-describedby={error ? 'auth-error' : undefined}
                   >
                     {programsList.map((p) => (
                       <option key={p.id} value={p.id}>
@@ -558,6 +605,8 @@ function AuthPageInner() {
                     value={regBranchId}
                     onChange={(e) => setRegBranchId(e.target.value)}
                     style={{ fontSize: '0.8125rem', padding: '0.5rem 0.75rem' }}
+                    required
+                    aria-describedby={error ? 'auth-error' : undefined}
                   >
                     {availableBranches.map((b) => (
                       <option key={b.id} value={b.id}>
@@ -606,10 +655,10 @@ function AuthPageInner() {
               <button
                 type="submit"
                 className="btn btn-primary auth-submit-btn"
-                disabled={loading}
+                disabled={loading || academicOptionsLoading || programsList.length === 0 || branchesList.length === 0}
                 style={{ marginTop: '0.5rem' }}
               >
-                {loading ? <Loader2 size={18} className="animate-spin" /> : <>Create Account <ArrowRight size={16} /></>}
+                {loading ? <><Loader2 size={18} className="animate-spin" aria-hidden="true" /><span>Creating your account…</span></> : <>Create Account <ArrowRight size={16} /></>}
               </button>
             </form>
           )}
@@ -831,6 +880,12 @@ function AuthPageInner() {
           font-weight: 500;
           margin-bottom: 1rem;
           line-height: 1.4;
+          overflow-wrap: anywhere;
+        }
+
+        .auth-error-banner:focus {
+          outline: 2px solid var(--color-danger);
+          outline-offset: 2px;
         }
 
         .auth-success-banner {
@@ -920,11 +975,25 @@ function AuthPageInner() {
 
           .auth-container {
             max-width: 100%;
+            min-width: 0;
           }
 
           .auth-card {
             padding: 1.25rem;
             border-radius: var(--radius-lg);
+            min-width: 0;
+          }
+
+          .auth-card form,
+          .auth-card .form-group,
+          .auth-card .form-input,
+          .auth-card .form-select {
+            min-width: 0;
+            max-width: 100%;
+          }
+
+          .auth-card select {
+            text-overflow: ellipsis;
           }
 
           .auth-ambient-glow {

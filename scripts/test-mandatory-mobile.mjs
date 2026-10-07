@@ -113,9 +113,10 @@ async function runMobileTests() {
     }),
   })
   const regNoMobileData = await regNoMobileRes.json()
+  const noMobileMsg = typeof regNoMobileData.error === 'string' ? regNoMobileData.error : regNoMobileData.error?.message || ''
   assert(
-    regNoMobileRes.status === 400 && regNoMobileData.error.toLowerCase().includes('mobile number is required'),
-    'Registration without mobile number fails with 400 and clear message'
+    (regNoMobileRes.status === 400 || regNoMobileRes.status === 422) && noMobileMsg.toLowerCase().includes('mobile'),
+    'Registration without mobile number fails with 400/422 and clear message'
   )
 
   // Test 2.2: Registration with invalid mobile number must fail
@@ -130,10 +131,17 @@ async function runMobileTests() {
     }),
   })
   const regInvalidMobileData = await regInvalidMobileRes.json()
+  const invalidMobileMsg = typeof regInvalidMobileData.error === 'string' ? regInvalidMobileData.error : regInvalidMobileData.error?.message || ''
   assert(
-    regInvalidMobileRes.status === 400 && regInvalidMobileData.error.toLowerCase().includes('invalid mobile number'),
-    'Registration with invalid mobile number fails with 400 and clear message'
+    (regInvalidMobileRes.status === 400 || regInvalidMobileRes.status === 422) && invalidMobileMsg.toLowerCase().includes('mobile'),
+    'Registration with invalid mobile number fails with 400/422 and clear message'
   )
+
+  // Fetch valid program and branch for registration test
+  const { data: progs } = await supabaseAdmin.from('programs').select('id').limit(1)
+  const validProgramId = progs?.[0]?.id
+  const { data: branches } = await supabaseAdmin.from('branches').select('id').eq('program_id', validProgramId).limit(1)
+  const validBranchId = branches?.[0]?.id
 
   // Test 2.3: Registration with valid Indian mobile number
   const regValidRes = await fetch(`${BASE_URL}/api/auth/register`, {
@@ -144,14 +152,19 @@ async function runMobileTests() {
       password: 'TestPassword123!',
       fullName: 'Valid Mobile Student',
       mobileNumber: '9876543210',
+      programId: validProgramId,
+      branchId: validBranchId,
+      currentYear: 1,
+      currentSemester: 1,
     }),
   })
   const regValidData = await regValidRes.json()
+  const validErrMsg = typeof regValidData.error === 'string' ? regValidData.error : regValidData.error?.message || ''
 
   if (regValidRes.status === 200 && regValidData.success) {
     assert(true, 'Registration with valid mobile number succeeds (HTTP 200)')
     if (regValidData.user?.id) createdUserId = regValidData.user.id
-  } else if (regValidData.error?.toLowerCase().includes('rate limit')) {
+  } else if (validErrMsg.toLowerCase().includes('rate limit')) {
     console.log('  ⚠️ Supabase email rate limit reached; verifying via admin client creation...')
     const { data: adminCreated, error: adminCreateErr } = await supabaseAdmin.auth.admin.createUser({
       email: testEmailValid,

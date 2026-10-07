@@ -68,6 +68,13 @@ async function createStorageBuckets() {
       allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
     },
     {
+      id: 'profile-images',
+      name: 'profile-images',
+      public: false,
+      fileSizeLimit: 4 * 1024 * 1024,
+      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+    },
+    {
       id: 'covers',
       name: 'covers',
       public: true,

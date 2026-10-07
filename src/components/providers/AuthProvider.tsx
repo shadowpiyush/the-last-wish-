@@ -1,10 +1,11 @@
 'use client'
 
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useToast } from '@/components/providers/ToastProvider'
 import { validateAndNormalizeIndianMobile } from '@/lib/validation/mobile'
 import { getBaseUrl, getAuthCallbackUrl } from '@/lib/auth/url'
+import { getAvatarUrl } from '@/lib/profile/avatar'
 import type { User, Session } from '@supabase/supabase-js'
 
 // Profile data stored in public.profiles table
@@ -13,6 +14,12 @@ export interface UserProfile {
   full_name: string
   mobile_number: string | null
   profile_picture_url: string | null
+  profile_picture_path?: string | null
+  profile_picture_version?: string | null
+  profile_picture_mime_type?: string | null
+  profile_picture_size_bytes?: number | null
+  profile_picture_width?: number | null
+  profile_picture_height?: number | null
   role: 'student' | 'admin'
   status: 'active' | 'blocked'
   program_id: string | null
@@ -51,6 +58,7 @@ interface AuthContextType {
   updateProfile: (data: Partial<UserProfile>) => Promise<void>
   completeProfile: (params: CompleteProfileParams) => Promise<UserProfile>
   uploadAvatar: (file: File) => Promise<string>
+  removeAvatar: () => Promise<void>
   changePassword: (newPassword: string) => Promise<void>
   resetPassword: (email: string) => Promise<void>
   refreshProfile: () => Promise<void>
@@ -75,6 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
   const { showToast } = useToast()
+  const profileUserIdRef = useRef<string | null>(null)
 
   const supabase = createClient()
 
@@ -115,6 +124,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         const profileData: UserProfile = {
           ...data,
+          profile_picture_url: getAvatarUrl(data),
           program_name: data.programs?.name ?? undefined,
           program_code: data.programs?.short_code ?? undefined,
           branch_name: data.branches?.name ?? undefined,
@@ -134,34 +144,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   useEffect(() => {
-    // Real Supabase listeners
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event: unknown, newSession: Session | null) => {
+    } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession)
       setUser(newSession?.user ?? null)
 
       if (newSession?.user) {
-        await fetchProfile(newSession.user.id, newSession.user)
+        const userId = newSession.user.id
+        const shouldFetchProfile = profileUserIdRef.current !== userId || event === 'USER_UPDATED'
+
+        if (shouldFetchProfile) {
+          profileUserIdRef.current = userId
+          setLoading(true)
+          // Keep the auth event callback quick; the profile request must not delay
+          // Supabase's other session events or trigger a duplicate getSession call.
+          void fetchProfile(userId, newSession.user).finally(() => setLoading(false))
+        } else {
+          setLoading(false)
+        }
       } else {
+        profileUserIdRef.current = null
         setProfile(null)
-      }
-
-      setLoading(false)
-    })
-
-    // Initial session check
-    supabase.auth.getSession().then(({ data }: { data: { session: Session | null } }) => {
-      const initialSession = data?.session ?? null
-      setSession(initialSession)
-      setUser(initialSession?.user ?? null)
-      if (initialSession?.user) {
-        fetchProfile(initialSession.user.id, initialSession.user)
-      } else {
         setLoading(false)
       }
-    }).catch(() => {
-      setLoading(false)
     })
 
     return () => {
@@ -191,10 +197,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const cleanMobile = mobileCheck.normalized!
 
     // Register via server API route which sends a confirmation email; does NOT auto-sign in
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), 25_000)
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           email: cleanEmail,
           password,
@@ -207,10 +216,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }),
       })
 
-      const data = await res.json()
+      const data = await res.json().catch(() => null) as {
+        success?: boolean
+        message?: string
+        error?: { code?: string; message?: string } | string
+        requestId?: string
+        requiresEmailVerification?: boolean
+      } | null
 
-      if (!res.ok) {
-        throw new Error(data.error || 'Registration failed')
+      if (!res.ok || !data?.success) {
+        const error = typeof data?.error === 'object' ? data.error : undefined
+        const code = error?.code
+        const message = error?.message || (typeof data?.error === 'string' ? data.error : '')
+        const safeMessage = code === 'ACCOUNT_EXISTS'
+          ? 'An account with this email already exists. Please sign in or check your email.'
+          : code === 'VALIDATION_ERROR'
+            ? message || 'Please correct the highlighted fields.'
+            : code === 'SERVICE_UNAVAILABLE'
+              ? message || 'Registration is temporarily unavailable. Please try again later.'
+              : code === 'PROFILE_SETUP_FAILED'
+                ? `${message} Reference: ${data?.requestId || 'unavailable'}.`
+                : 'Something went wrong on our server. Please try again.'
+        throw new Error(safeMessage)
       }
 
       // Registration succeeded — user must verify their email before signing in.
@@ -224,9 +251,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // We do NOT sign in automatically after registration.
       // The user must verify their email first, then sign in.
     } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : 'Registration failed'
+      const isTimeout = err instanceof DOMException && err.name === 'AbortError'
+      const isNetworkFailure = err instanceof TypeError
+      const errMsg = isTimeout
+        ? 'The request took too long. Check your connection and try again.'
+        : isNetworkFailure
+          ? "We couldn't reach the server. Check your connection and try again."
+          : err instanceof Error
+            ? err.message
+            : 'Something went wrong on our server. Please try again.'
       showToast({ type: 'error', message: errMsg })
-      throw err
+      throw new Error(errMsg)
+    } finally {
+      window.clearTimeout(timeoutId)
     }
   }
 
@@ -328,30 +365,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const uploadAvatar = async (file: File): Promise<string> => {
     if (!user) throw new Error('Not authenticated')
 
-    const fileExt = file.name.split('.').pop()
-    const filePath = `${user.id}/avatar.${fileExt}`
-
-    const { error: uploadError } = await supabase.storage
-      .from('avatars')
-      .upload(filePath, file, { upsert: true })
-
-    if (uploadError) {
-      showToast({ type: 'error', message: uploadError.message })
-      throw uploadError
+    const formData = new FormData()
+    formData.set('file', file)
+    const response = await fetch('/api/profile/avatar', { method: 'POST', body: formData })
+    const data = await response.json().catch(() => null) as { avatarUrl?: string; error?: string } | null
+    if (!response.ok || !data?.avatarUrl) {
+      const message = data?.error || 'Unable to upload the profile picture. Please try again.'
+      showToast({ type: 'error', message })
+      throw new Error(message)
     }
 
-    const {
-      data: { publicUrl },
-    } = supabase.storage.from('avatars').getPublicUrl(filePath)
+    await fetchProfile(user.id, user)
+    showToast({ type: 'success', message: 'Profile picture updated.' })
+    return data.avatarUrl
+  }
 
-    await supabase
-      .from('profiles')
-      .update({ profile_picture_url: publicUrl, updated_at: new Date().toISOString() })
-      .eq('id', user.id)
+  const removeAvatar = async (): Promise<void> => {
+    if (!user) throw new Error('Not authenticated')
 
-    setProfile((prev) => (prev ? { ...prev, profile_picture_url: publicUrl } : prev))
-    showToast({ type: 'success', message: 'Avatar updated.' })
-    return publicUrl
+    const response = await fetch('/api/profile/avatar', { method: 'DELETE' })
+    const data = await response.json().catch(() => null) as { error?: string } | null
+    if (!response.ok) {
+      const message = data?.error || 'Unable to remove the profile picture. Please try again.'
+      showToast({ type: 'error', message })
+      throw new Error(message)
+    }
+
+    await fetchProfile(user.id, user)
+    showToast({ type: 'success', message: 'Profile picture removed.' })
   }
 
   const changePassword = async (newPassword: string) => {
@@ -423,6 +464,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         updateProfile,
         completeProfile,
         uploadAvatar,
+        removeAvatar,
         changePassword,
         resetPassword,
         refreshProfile,

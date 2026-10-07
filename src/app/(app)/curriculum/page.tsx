@@ -12,17 +12,23 @@ export const metadata: Metadata = {
 export default async function CurriculumPage() {
   const supabase = await createClient()
 
-  // Fetch all active programs
-  const { data: programs } = await supabase
-    .from('programs')
-    .select('id, name, short_code, total_semesters, duration_years')
-    .order('name')
+  // Branch metadata is small and public; loading it beside programs removes a
+  // dependent network round trip before the curriculum can render.
+  const [{ data: programs }, { data: branches }] = await Promise.all([
+    supabase.from('programs')
+      .select('id, name, short_code, total_semesters, duration_years')
+      .order('name'),
+    supabase.from('branches')
+      .select('id, program_id, name, code')
+      .order('name'),
+  ])
 
   const progs = programs || []
   const btech = progs.find((p) => p.short_code === 'B.Tech') || progs[0]
   const defaultProgramId = btech?.id || ''
 
-  let defaultBranches: Array<{ id: string; program_id: string; name: string; code: string }> = []
+  const defaultBranches: Array<{ id: string; program_id: string; name: string; code: string }> =
+    (branches || []).filter((branch) => branch.program_id === defaultProgramId)
   let defaultBranchId = ''
   let initialSubjects: Array<{
     id: string
@@ -36,13 +42,6 @@ export default async function CurriculumPage() {
   }> = []
 
   if (defaultProgramId) {
-    const { data: branches } = await supabase
-      .from('branches')
-      .select('id, program_id, name, code')
-      .eq('program_id', defaultProgramId)
-      .order('name')
-
-    defaultBranches = branches || []
     const preferredBranch = defaultBranches.find((b) => b.code === 'CSE') || defaultBranches[0]
     defaultBranchId = preferredBranch?.id || ''
 

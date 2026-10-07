@@ -46,7 +46,16 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   full_name TEXT NOT NULL,
   mobile_number TEXT,
+  email TEXT,
+  email_confirmed_at TIMESTAMPTZ,
   profile_picture_url TEXT,
+  profile_picture_path TEXT,
+  profile_picture_version UUID,
+  profile_picture_mime_type TEXT,
+  profile_picture_size_bytes INTEGER,
+  profile_picture_width INTEGER,
+  profile_picture_height INTEGER,
+  profile_picture_uploaded_at TIMESTAMPTZ,
   role TEXT NOT NULL DEFAULT 'student' CHECK (role IN ('student', 'admin')),
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'blocked')),
   program_id UUID REFERENCES public.programs(id) ON DELETE SET NULL,
@@ -235,6 +244,13 @@ CREATE TABLE IF NOT EXISTS public.activity_events (
 -- 3. INDEXES
 -- ============================================================================
 CREATE INDEX IF NOT EXISTS idx_profiles_role ON public.profiles(role);
+CREATE INDEX IF NOT EXISTS idx_profiles_directory_created_at ON public.profiles(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_profiles_directory_role_created_at ON public.profiles(role, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_profiles_directory_status_created_at ON public.profiles(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_profiles_directory_branch_created_at ON public.profiles(branch_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_profiles_full_name_trgm ON public.profiles USING GIN (full_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_profiles_email_trgm ON public.profiles USING GIN (email gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_profiles_mobile_trgm ON public.profiles USING GIN (mobile_number gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_subjects_search ON public.subjects USING GIN (search_vector);
 CREATE INDEX IF NOT EXISTS idx_subjects_branch_sem ON public.subjects(branch_id, semester_number);
 CREATE INDEX IF NOT EXISTS idx_subjects_program ON public.subjects(program_id);
@@ -328,11 +344,10 @@ BEGIN
     v_branch,
     COALESCE(NULLIF(NEW.raw_user_meta_data->>'current_year', '')::INTEGER, 1),
     COALESCE(NULLIF(NEW.raw_user_meta_data->>'current_semester', '')::INTEGER, 1),
-    COALESCE(NEW.raw_user_meta_data->>'role', CASE WHEN NEW.email ILIKE '%admin%' THEN 'admin' ELSE 'student' END)
+    'student'
   )
   ON CONFLICT (id) DO UPDATE SET
-    full_name = EXCLUDED.full_name,
-    role = EXCLUDED.role;
+    full_name = EXCLUDED.full_name;
   RETURN NEW;
 EXCEPTION WHEN OTHERS THEN
   RETURN NEW;
