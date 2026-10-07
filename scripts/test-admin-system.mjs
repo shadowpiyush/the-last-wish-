@@ -1,10 +1,32 @@
 import { createClient } from '@supabase/supabase-js'
 import { createServerClient } from '@supabase/ssr'
+import fs from 'fs'
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://iatoiiuqezaeuvtkdpvg.supabase.co'
-const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlhdG9paXVxZXphZXV2dGtkcHZnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA4NzM4OTgsImV4cCI6MjEwNjQ0OTg5OH0.vkkuWjdgv59IOnKeXI9uKPNqu-fzuEwwlAe1nbXBvko'
-const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlhdG9paXVxZXphZXV2dGtkcHZnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDg3Mzg5OCwiZXhwIjoyMTA2NDQ5ODk4fQ.1UvU6drMDFmnT4tNEO3TTrPiaxWjXKjjUZUljXkds08'
-const BASE_URL = 'http://localhost:3000'
+// Load .env.local if present in development/test environment
+if (fs.existsSync('.env.local')) {
+  const envContent = fs.readFileSync('.env.local', 'utf8')
+  for (const line of envContent.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed && !trimmed.startsWith('#')) {
+      const idx = trimmed.indexOf('=')
+      if (idx !== -1) {
+        const key = trimmed.slice(0, idx).trim()
+        const val = trimmed.slice(idx + 1).trim().replace(/^['"](.*)['"]$/, '$1')
+        process.env[key] = process.env[key] || val
+      }
+    }
+  }
+}
+
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
+const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+
+if (!SUPABASE_URL || !SERVICE_KEY || !ANON_KEY) {
+  console.error('ERROR: Missing required Supabase credentials in environment or .env.local')
+  process.exit(1)
+}
 
 const adminClient = createClient(SUPABASE_URL, SERVICE_KEY)
 

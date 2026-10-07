@@ -28,9 +28,32 @@ function validateAndNormalizeIndianMobile(input) {
   return { valid: true, normalized: `+91${cleaned}`, digitsOnly: cleaned }
 }
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://iatoiiuqezaeuvtkdpvg.supabase.co'
-const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlhdG9paXVxZXphZXV2dGtkcHZnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDg3Mzg5OCwiZXhwIjoyMTA2NDQ5ODk4fQ.1UvU6drMDFmnT4tNEO3TTrPiaxWjXKjjUZUljXkds08'
-const BASE_URL = 'http://localhost:3000'
+import fs from 'fs'
+
+// Load .env.local if present in development/test environment
+if (fs.existsSync('.env.local')) {
+  const envContent = fs.readFileSync('.env.local', 'utf8')
+  for (const line of envContent.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed && !trimmed.startsWith('#')) {
+      const idx = trimmed.indexOf('=')
+      if (idx !== -1) {
+        const key = trimmed.slice(0, idx).trim()
+        const val = trimmed.slice(idx + 1).trim().replace(/^['"](.*)['"]$/, '$1')
+        process.env[key] = process.env[key] || val
+      }
+    }
+  }
+}
+
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+
+if (!SUPABASE_URL || !SERVICE_KEY) {
+  console.error('ERROR: Missing required Supabase credentials in environment or .env.local')
+  process.exit(1)
+}
 
 const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_KEY)
 
@@ -100,6 +123,7 @@ async function runMobileTests() {
   const testEmailNoMobile = `test_nomobile_${Date.now()}@hbtu-test.in`
   const testEmailInvalidMobile = `test_invalidmobile_${Date.now()}@hbtu-test.in`
   const testEmailValid = `test_validmobile_${Date.now()}@hbtu-test.in`
+  const dynamicTestPassword = `TestPass#${Date.now()}!Secure`
   let createdUserId = null
 
   // Test 2.1: Registration without mobile number must fail
@@ -108,7 +132,7 @@ async function runMobileTests() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       email: testEmailNoMobile,
-      password: 'TestPassword123!',
+      password: dynamicTestPassword,
       fullName: 'No Mobile Student',
     }),
   })
@@ -125,7 +149,7 @@ async function runMobileTests() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       email: testEmailInvalidMobile,
-      password: 'TestPassword123!',
+      password: dynamicTestPassword,
       fullName: 'Invalid Mobile Student',
       mobileNumber: '5551234',
     }),
@@ -149,7 +173,7 @@ async function runMobileTests() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       email: testEmailValid,
-      password: 'TestPassword123!',
+      password: dynamicTestPassword,
       fullName: 'Valid Mobile Student',
       mobileNumber: '9876543210',
       programId: validProgramId,
@@ -168,7 +192,7 @@ async function runMobileTests() {
     console.log('  ⚠️ Supabase email rate limit reached; verifying via admin client creation...')
     const { data: adminCreated, error: adminCreateErr } = await supabaseAdmin.auth.admin.createUser({
       email: testEmailValid,
-      password: 'TestPassword123!',
+      password: dynamicTestPassword,
       email_confirm: true,
       user_metadata: {
         full_name: 'Valid Mobile Student',
