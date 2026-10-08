@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   LayoutDashboard,
+  ClipboardCheck,
   BookOpen,
   GraduationCap,
   FileText,
@@ -24,6 +25,7 @@ interface SidebarProps {
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/attendance', label: 'Attendance Tracker', icon: ClipboardCheck },
   { href: '/syllabus', label: 'Syllabus', icon: BookOpen },
   { href: '/curriculum', label: 'Curriculum Roadmap', icon: GraduationCap },
   { href: '/notes', label: 'Study Notes', icon: FileText },

@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic'
 
 import type { Metadata } from 'next'
 import { createClient } from '@/lib/supabase/server'
-import { BookOpen, FileText, Library, GraduationCap, Calculator, TrendingUp, Clock } from 'lucide-react'
+import { BookOpen, FileText, Library, GraduationCap, Calculator, TrendingUp, Clock, ClipboardCheck } from 'lucide-react'
 import Link from 'next/link'
 
 export const metadata: Metadata = {
@@ -11,6 +11,7 @@ export const metadata: Metadata = {
 }
 
 const quickLinks = [
+  { href: '/attendance', icon: ClipboardCheck, label: 'Attendance', color: '#6366f1', bg: 'rgba(99, 102, 241, 0.1)' },
   { href: '/syllabus', icon: BookOpen, label: 'Syllabus', color: '#e11d48', bg: 'rgba(225, 29, 72, 0.1)' },
   { href: '/notes', icon: FileText, label: 'Notes', color: '#10b981', bg: 'rgba(16, 185, 129, 0.1)' },
   { href: '/library', icon: Library, label: 'Library', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.1)' },

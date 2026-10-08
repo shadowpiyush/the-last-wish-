@@ -380,7 +380,7 @@ function AuthPageInner() {
                     type="email"
                     className="form-input"
                     style={{ paddingLeft: 38 }}
-                    placeholder="you@example.com"
+                    placeholder="rollno@hbtu.ac.in"
                     value={loginEmail}
                     onChange={(e) => setLoginEmail(e.target.value)}
                     required
