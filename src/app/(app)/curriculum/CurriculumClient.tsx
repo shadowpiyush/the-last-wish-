@@ -126,6 +126,7 @@ export function CurriculumClient({
   const [loading, setLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [showNepBreakdown, setShowNepBreakdown] = useState(false)
+  const [showBsmsExitBreakdown, setShowBsmsExitBreakdown] = useState(false)
   const [bbaTrackFilter, setBbaTrackFilter] = useState<'ALL' | 'CORE' | 'MARKETING' | 'FINANCE' | 'HR' | 'ANALYTICS'>('ALL')
 
   // When selectedProgram changes, fetch its branches
@@ -140,8 +141,8 @@ export function CurriculumClient({
         const list = data || []
         setBranches(list)
         if (list.length > 0 && !list.some((b: Branch) => b.id === selectedBranch)) {
-          // Prioritize CSE when switching to B.Tech, or BBA for BBA
-          const preferred = list.find((b) => b.code === 'CSE') || list[0]
+          // Prioritize CSE for B.Tech, MDS for BS-MS, or BBA for BBA
+          const preferred = list.find((b) => b.code === 'CSE') || list.find((b) => b.code === 'MDS') || list.find((b) => b.code === 'BBA') || list[0]
           setSelectedBranch(preferred.id)
         }
       })
@@ -174,6 +175,10 @@ export function CurriculumClient({
   const isNep2020Branch = currentBranch?.code === 'CSE' || currentBranch?.code === 'AIML'
   const isLftBranch = currentBranch?.code === 'LFT'
   const isBbaProgram = currentProg?.short_code === 'BBA'
+  const isBsmsMds = currentBranch?.code === 'MDS' || (currentProg?.short_code === 'BS-MS' && (!currentBranch || currentBranch.code === 'MDS'))
+  const isCheBranch = currentBranch?.code === 'CHE'
+  const isCeBranch = currentBranch?.code === 'CE'
+  const isBcBranch = currentBranch?.code === 'BC'
 
   // Filter subjects by search and BBA Track
   const filteredSubjects = subjects.filter((s) => {
@@ -259,7 +264,15 @@ export function CurriculumClient({
           <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
             {branches.map((b) => {
               const isSelected = selectedBranch === b.id
-              const isOfficialCurriculum = b.code === 'CSE' || b.code === 'AIML' || b.code === 'LFT' || b.code === 'BBA'
+              const isOfficialCurriculum =
+                b.code === 'CSE' ||
+                b.code === 'AIML' ||
+                b.code === 'LFT' ||
+                b.code === 'BBA' ||
+                b.code === 'MDS' ||
+                b.code === 'CHE' ||
+                b.code === 'CE' ||
+                b.code === 'BC'
 
               return (
                 <button
@@ -301,7 +314,17 @@ export function CurriculumClient({
                         fontWeight: 700,
                       }}
                     >
-                      {b.code === 'LFT' ? '2025-26' : b.code === 'BBA' ? '2024-25' : 'NEP 2020'}
+                      {b.code === 'LFT'
+                        ? '2025-26'
+                        : b.code === 'BBA'
+                        ? '2024-25'
+                        : b.code === 'MDS'
+                        ? '2023-24'
+                        : b.code === 'CE'
+                        ? '2022-23 / 23-24'
+                        : (b.code === 'CHE' || b.code === 'BC')
+                        ? '2022-23'
+                        : 'NEP 2020'}
                     </span>
                   )}
                 </button>
@@ -506,6 +529,182 @@ export function CurriculumClient({
               })}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Official Curriculum Banner for BS-MS (Mathematics and Data Science) */}
+      {isBsmsMds && (
+        <div
+          className="glass-card"
+          style={{
+            padding: '1.25rem 1.5rem',
+            marginBottom: '1.5rem',
+            borderLeft: '4px solid #0284c7',
+            background: 'linear-gradient(135deg, rgba(2, 132, 199, 0.06) 0%, rgba(99, 102, 241, 0.04) 100%)',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <span className="badge badge-sky" style={{ fontSize: '0.6875rem', fontWeight: 700, background: 'rgba(2, 132, 199, 0.15)', color: '#0284c7' }}>
+                  <Sparkles size={11} style={{ display: 'inline', marginRight: 3 }} />
+                  Official Study & Evaluation Scheme (HBTU)
+                </span>
+                <span className="badge badge-neutral" style={{ fontSize: '0.6875rem' }}>
+                  With effect from Session 2023-2024
+                </span>
+              </div>
+              <h2 style={{ fontSize: '1.125rem', fontWeight: 800, fontFamily: 'var(--font-display)', margin: 0 }}>
+                School of Basic and Applied Sciences · Department of Mathematics
+              </h2>
+              <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: 4, marginBottom: 0 }}>
+                B. S. Program / BS-MS Dual Degree in <strong style={{ color: 'var(--text-primary)' }}>Mathematics and Data Science</strong> · Approved by Dr. Ram Autar, Prof. & Head of Department
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowBsmsExitBreakdown(!showBsmsExitBreakdown)}
+              className="btn btn-secondary"
+              style={{
+                fontSize: '0.75rem',
+                padding: '0.4rem 0.8rem',
+                gap: 5,
+                borderRadius: 'var(--radius-md)',
+              }}
+            >
+              <Layers size={14} />
+              {showBsmsExitBreakdown ? 'Hide NEP Exit Options' : 'View NEP 2020 Multi-Exit Awards'}
+              {showBsmsExitBreakdown ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
+          </div>
+
+          {/* NEP 2020 Exit Criteria Breakdown */}
+          {showBsmsExitBreakdown && (
+            <div style={{ marginTop: '1.25rem', paddingTop: '1.25rem', borderTop: '1px solid var(--border-light)' }}>
+              <div style={{ fontSize: '0.8125rem', fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Info size={14} color="#0284c7" />
+                NEP 2020 Stage-Wise Exit Awards & Credit Framework:
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border-light)', background: 'rgba(0,0,0,0.02)' }}>
+                      <th style={{ textAlign: 'left', padding: '0.4rem 0.6rem', color: 'var(--text-tertiary)' }}>Study Period</th>
+                      <th style={{ textAlign: 'left', padding: '0.4rem 0.6rem', color: 'var(--text-tertiary)' }}>Award / Degree Title</th>
+                      <th style={{ textAlign: 'center', padding: '0.4rem 0.6rem', color: 'var(--text-tertiary)' }}>Core Course Credits</th>
+                      <th style={{ textAlign: 'center', padding: '0.4rem 0.6rem', color: 'var(--text-tertiary)' }}>Exit Credits (Skill + Internship)</th>
+                      <th style={{ textAlign: 'center', padding: '0.4rem 0.6rem', color: 'var(--text-tertiary)' }}>Total Credits</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[
+                      { period: '1 Year (Sems I & II)', title: 'Certificate in Mathematics and Data Science', core: 44, exit: '10 (4 Skill + 6 Summer Internship)', total: 54 },
+                      { period: '2 Years (Sems I to IV)', title: 'Diploma in Mathematics and Data Science', core: 92, exit: '10 (4 Skill + 6 Summer Internship)', total: 102 },
+                      { period: '3 Years (Sems I to VI)', title: 'B.Sc. Degree in Mathematics and Data Science', core: 136, exit: '10 (4 Skill + 6 Summer Internship)', total: 146 },
+                      { period: '4 Years (Sems I to VIII)', title: 'B. S. (Honors) / B. S. (Honors with Research)', core: 180, exit: 'Completed via BS Project-II Thesis', total: 180 },
+                      { period: '5 Years (Sems I to X)', title: 'BS-MS Post Graduate Dual Degree (MDS)', core: 224, exit: 'Master\'s Dissertation (MS Project-I & II)', total: 224 },
+                    ].map((row, idx) => (
+                      <tr key={idx} style={{ borderBottom: '1px solid var(--border-light)' }}>
+                        <td style={{ padding: '0.35rem 0.6rem', fontWeight: 600 }}>{row.period}</td>
+                        <td style={{ padding: '0.35rem 0.6rem' }}>{row.title}</td>
+                        <td style={{ padding: '0.35rem 0.6rem', textAlign: 'center' }}>{row.core}</td>
+                        <td style={{ padding: '0.35rem 0.6rem', textAlign: 'center', color: '#0284c7' }}>{row.exit}</td>
+                        <td style={{ padding: '0.35rem 0.6rem', textAlign: 'center', fontWeight: 700, color: '#9b1c31' }}>{row.total}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Official Curriculum Banner for Chemical Engineering (CHE) */}
+      {isCheBranch && (
+        <div
+          className="glass-card"
+          style={{
+            padding: '1.25rem 1.5rem',
+            marginBottom: '1.5rem',
+            borderLeft: '4px solid #059669',
+            background: 'linear-gradient(135deg, rgba(5, 150, 105, 0.06) 0%, rgba(79, 70, 229, 0.04) 100%)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <span className="badge badge-emerald" style={{ fontSize: '0.6875rem', fontWeight: 700, background: 'rgba(5, 150, 105, 0.15)', color: '#059669' }}>
+              <Sparkles size={11} style={{ display: 'inline', marginRight: 3 }} />
+              Official Course Structure & Evaluation Scheme
+            </span>
+            <span className="badge badge-neutral" style={{ fontSize: '0.6875rem' }}>
+              Effective from Session 2022-23 for new entrants
+            </span>
+          </div>
+          <h2 style={{ fontSize: '1.125rem', fontWeight: 800, fontFamily: 'var(--font-display)', margin: 0 }}>
+            Department of Chemical Engineering · School of Chemical Technology
+          </h2>
+          <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: 4, marginBottom: 0 }}>
+            B. Tech. Degree Programme in <strong style={{ color: 'var(--text-primary)' }}>Chemical Engineering</strong> · Semesters I to VIII · Total: 178 Credits · 47 Core & Elective Subjects
+          </p>
+        </div>
+      )}
+
+      {/* Official Curriculum Banner for Civil Engineering (CE) */}
+      {isCeBranch && (
+        <div
+          className="glass-card"
+          style={{
+            padding: '1.25rem 1.5rem',
+            marginBottom: '1.5rem',
+            borderLeft: '4px solid #2563eb',
+            background: 'linear-gradient(135deg, rgba(37, 99, 235, 0.06) 0%, rgba(155, 28, 49, 0.04) 100%)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <span className="badge badge-blue" style={{ fontSize: '0.6875rem', fontWeight: 700, background: 'rgba(37, 99, 235, 0.15)', color: '#2563eb' }}>
+              <Sparkles size={11} style={{ display: 'inline', marginRight: 3 }} />
+              Official Scheme of Evaluation & Syllabus
+            </span>
+            <span className="badge badge-neutral" style={{ fontSize: '0.6875rem' }}>
+              Effective from Session 2022-23 / 2023-24 onwards
+            </span>
+          </div>
+          <h2 style={{ fontSize: '1.125rem', fontWeight: 800, fontFamily: 'var(--font-display)', margin: 0 }}>
+            Department of Civil Engineering · School of Engineering
+          </h2>
+          <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: 4, marginBottom: 0 }}>
+            B. Tech. Degree Programme in <strong style={{ color: 'var(--text-primary)' }}>Civil Engineering</strong> · Approved by Dr. Deepesh Singh, Prof. & Head of Department · Total: 178 Credits · 49 Subjects
+          </p>
+        </div>
+      )}
+
+      {/* Official Curriculum Banner for Biochemical Engineering (BC) */}
+      {isBcBranch && (
+        <div
+          className="glass-card"
+          style={{
+            padding: '1.25rem 1.5rem',
+            marginBottom: '1.5rem',
+            borderLeft: '4px solid #7c3aed',
+            background: 'linear-gradient(135deg, rgba(124, 58, 237, 0.06) 0%, rgba(5, 150, 105, 0.04) 100%)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <span className="badge badge-purple" style={{ fontSize: '0.6875rem', fontWeight: 700, background: 'rgba(124, 58, 237, 0.15)', color: '#7c3aed' }}>
+              <Sparkles size={11} style={{ display: 'inline', marginRight: 3 }} />
+              Official Course Structure & Evaluation Scheme
+            </span>
+            <span className="badge badge-neutral" style={{ fontSize: '0.6875rem' }}>
+              Effective from Session 2022-23 for new entrants
+            </span>
+          </div>
+          <h2 style={{ fontSize: '1.125rem', fontWeight: 800, fontFamily: 'var(--font-display)', margin: 0 }}>
+            Department of Biochemical Engineering · School of Chemical Technology
+          </h2>
+          <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: 4, marginBottom: 0 }}>
+            B. Tech. Chemical Technology - <strong style={{ color: 'var(--text-primary)' }}>Biochemical Engineering</strong> · Semesters I to VIII · Total: 180 Credits · 50 Subjects
+          </p>
         </div>
       )}
 

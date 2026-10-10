@@ -132,7 +132,8 @@ export function SyllabusClient({
         const list = data || []
         setBranches(list)
         if (list.length > 0 && !list.some((b: Branch) => b.id === selectedBranch)) {
-          setSelectedBranch(list[0].id)
+          const preferred = list.find((b) => b.code === 'CSE') || list.find((b) => b.code === 'MDS') || list.find((b) => b.code === 'BBA') || list[0]
+          setSelectedBranch(preferred.id)
         }
       })
   }, [selectedProgram, selectedBranch, supabase])

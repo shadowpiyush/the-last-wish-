@@ -429,6 +429,8 @@ async function main() {
     const { execSync } = await import('child_process');
     execSync('node --env-file=.env.local scripts/seed-curriculum-cse-aiml-lft.mjs', { stdio: 'inherit' });
     execSync('node --env-file=.env.local scripts/seed-curriculum-bba.mjs', { stdio: 'inherit' });
+    execSync('node --env-file=.env.local scripts/seed-curriculum-bsms.mjs', { stdio: 'inherit' });
+    execSync('node --env-file=.env.local scripts/seed-curriculum-bc-che-ce.mjs', { stdio: 'inherit' });
   } catch (err) {
     console.warn('   ⚠️ Could not automatically execute official curriculum seeds:', err.message);
   }

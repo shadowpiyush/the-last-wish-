@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import Link from 'next/link'
 import {
   Calendar as CalendarIcon,
   BarChart3,
@@ -1456,18 +1457,40 @@ export function AttendanceClient() {
           <div className="empty-profile-icon">
             <Folder size={44} />
           </div>
-          <h2 className="empty-profile-title">No subjects available</h2>
+          <h2 className="empty-profile-title">No subjects found for current profile</h2>
           <p className="empty-profile-desc">
-            We couldn't find subjects assigned to your current academic profile.
-            Please check your profile or contact an administrator.
+            {summaryData?.academicContext?.branchName
+              ? `No registered subjects matched ${summaryData.academicContext.branchName} for Semester ${summaryData.academicContext.semester ?? 'unspecified'}.`
+              : "We couldn't detect your academic branch and semester. Please configure your profile to start tracking attendance."}
           </p>
-          <div className="empty-profile-actions">
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', justifyContent: 'center', marginTop: '0.25rem' }}>
+            <span style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem', borderRadius: '999px', background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+              Civil Engineering (CE)
+            </span>
+            <span style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem', borderRadius: '999px', background: 'rgba(16, 185, 129, 0.15)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+              Chemical Engineering (CHE)
+            </span>
+            <span style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem', borderRadius: '999px', background: 'rgba(245, 158, 11, 0.15)', color: '#fbbf24', border: '1px solid rgba(245, 158, 11, 0.3)' }}>
+              Biochemical Engineering (BC)
+            </span>
+            <span style={{ fontSize: '0.75rem', padding: '0.25rem 0.65rem', borderRadius: '999px', background: 'rgba(168, 85, 247, 0.15)', color: '#c084fc', border: '1px solid rgba(168, 85, 247, 0.3)' }}>
+              BS-MS Sciences
+            </span>
+          </div>
+          <div className="empty-profile-actions" style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', justifyContent: 'center', marginTop: '0.75rem' }}>
+            <Link href="/profile" className="btn-primary" style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Edit3 size={15} /> Update Profile
+            </Link>
+            <Link href="/curriculum" className="btn-secondary" style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+              <BookOpen size={15} /> View Curriculum
+            </Link>
             <button
               type="button"
               onClick={() => void loadData()}
-              className="btn-primary"
+              className="btn-secondary"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}
             >
-              <RefreshCw size={15} /> Refresh Data
+              <RefreshCw size={15} /> Refresh
             </button>
           </div>
         </div>
