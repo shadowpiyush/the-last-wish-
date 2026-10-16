@@ -206,6 +206,34 @@ function UserAvatar({ user, size = 36 }: { user: AdminUserItem; size?: number })
   )
 }
 
+// Safe JSON parser that never throws WebKit DOMException 12 (SyntaxError: The string did not match the expected pattern.)
+async function safeFetchJson<T = any>(
+  res: Response
+): Promise<{ ok: boolean; status: number; data: T | null; error: string | null; field?: string }> {
+  let data: any = null
+  let text = ''
+  try {
+    text = await res.text()
+    if (text) {
+      data = JSON.parse(text)
+    }
+  } catch {
+    // Non-JSON or empty response body
+  }
+
+  if (!res.ok) {
+    const errorMsg =
+      data?.error ||
+      data?.message ||
+      (text && text.length < 300 && !text.includes('<!DOCTYPE') && !text.includes('<html')
+        ? text.trim()
+        : `Request failed with status ${res.status}`)
+    return { ok: false, status: res.status, data, error: errorMsg, field: data?.field }
+  }
+
+  return { ok: true, status: res.status, data, error: null, field: data?.field }
+}
+
 // Helper to group database mappings into editable UI groups
 function groupDbMappingsToUi(mappings?: AcademicMappingRecord[], defaultProgramId?: string): AcademicMappingGroup[] {
   if (!mappings || mappings.length === 0) return []
@@ -856,6 +884,14 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
   const [bookMessage, setBookMessage] = useState('')
   const [bookSuccessId, setBookSuccessId] = useState('')
   const [academicMappings, setAcademicMappings] = useState<AcademicMappingGroup[]>([])
+  const [bookFieldErrors, setBookFieldErrors] = useState<{
+    title?: string
+    author?: string
+    pdf?: string
+    year?: string
+    pages?: string
+    mappings?: string
+  }>({})
   const bookAbortControllerRef = useRef<AbortController | null>(null)
   const activeUploadRef = useRef<{ uploadId: string; fileKey: string } | null>(null)
 
@@ -1028,11 +1064,11 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
     setContentLoading(true)
     try {
       const [resNotes, resBooks] = await Promise.all([
-        fetch('/api/admin/notes').then((r) => r.json()),
-        fetch('/api/admin/ebooks').then((r) => r.json()),
+        fetch('/api/admin/notes').then(safeFetchJson),
+        fetch('/api/admin/ebooks').then(safeFetchJson),
       ])
-      if (resNotes?.notes) setUploadedNotes(resNotes.notes)
-      if (resBooks?.books) setUploadedBooks(resBooks.books)
+      if (resNotes?.ok && resNotes.data?.notes) setUploadedNotes(resNotes.data.notes)
+      if (resBooks?.ok && resBooks.data?.books) setUploadedBooks(resBooks.data.books)
     } catch (e) {
       console.error('Failed to load uploaded content:', e)
     } finally {
@@ -1157,29 +1193,71 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
     e.preventDefault()
     setBookMessage('')
     setBookSuccessId('')
+    setBookFieldErrors({})
+
+    const errors: typeof bookFieldErrors = {}
+
+    const cleanTitle = bookTitle.trim()
+    if (!cleanTitle) {
+      errors.title = 'Book title is required.'
+    } else if (cleanTitle.length > 255) {
+      errors.title = 'Book title must not exceed 255 characters.'
+    }
+
+    const cleanAuthor = bookAuthor.trim()
+    if (!cleanAuthor) {
+      errors.author = 'Author name is required.'
+    } else if (cleanAuthor.length > 255) {
+      errors.author = 'Author name must not exceed 255 characters.'
+    }
 
     if (!bookPdfFile) {
-      setBookMessage('Error: Please select an eBook PDF file.')
-      return
+      errors.pdf = 'Please select an eBook PDF file.'
+    } else if (bookPdfFile.type !== 'application/pdf' && !bookPdfFile.name.toLowerCase().endsWith('.pdf')) {
+      errors.pdf = 'Only PDF documents are allowed for eBook upload.'
+    } else if (bookPdfFile.size === 0) {
+      errors.pdf = 'Selected eBook PDF is empty (0 bytes).'
+    } else if (bookPdfFile.size > MAX_EBOOK_FILE_SIZE) {
+      errors.pdf = `eBook PDF exceeds ${(MAX_EBOOK_FILE_SIZE / (1024 * 1024)).toFixed(0)} MB limit (${(
+        bookPdfFile.size /
+        (1024 * 1024)
+      ).toFixed(1)} MB).`
     }
-    if (bookPdfFile.type !== 'application/pdf' && !bookPdfFile.name.toLowerCase().endsWith('.pdf')) {
-      setBookMessage('Error: eBook must be a PDF document.')
-      return
+
+    if (bookYear !== undefined && bookYear !== null && String(bookYear).trim() !== '') {
+      const yearNum = Number(bookYear)
+      const currentYear = new Date().getFullYear()
+      if (!Number.isInteger(yearNum) || yearNum < 1800 || yearNum > currentYear + 5) {
+        errors.year = `Publication year must be between 1800 and ${currentYear + 5}.`
+      }
     }
-    if (bookPdfFile.size === 0) {
-      setBookMessage('Error: Selected eBook PDF is empty (0 bytes).')
-      return
+
+    if (bookPages !== undefined && bookPages !== null && String(bookPages).trim() !== '') {
+      const pagesNum = Number(bookPages)
+      if (!Number.isInteger(pagesNum) || pagesNum < 1 || pagesNum > 50000) {
+        errors.pages = 'Estimated pages must be a positive integer between 1 and 50,000.'
+      }
     }
-    if (bookPdfFile.size > MAX_EBOOK_FILE_SIZE) {
-      setBookMessage(
-        `Error: eBook PDF exceeds ${(MAX_EBOOK_FILE_SIZE / (1024 * 1024)).toFixed(0)} MB limit (${(
-          bookPdfFile.size /
-          (1024 * 1024)
-        ).toFixed(1)} MB).`
-      )
+
+    if (academicMappings.length > 0) {
+      for (let i = 0; i < academicMappings.length; i++) {
+        const group = academicMappings[i]
+        if (group.branchIds.length > 0 || group.subjectIds.length > 0 || group.semesters.length > 0) {
+          if (!group.programId) {
+            errors.mappings = `Academic Mapping #${i + 1}: Please select an academic program.`
+            break
+          }
+        }
+      }
+    }
+
+    if (Object.keys(errors).length > 0 || !bookPdfFile) {
+      setBookFieldErrors(errors)
+      setBookMessage("We couldn't upload this eBook. Please check the highlighted fields and try again.")
       return
     }
 
+    const pdfFile = bookPdfFile
     const abortController = new AbortController()
     bookAbortControllerRef.current = abortController
 
@@ -1205,8 +1283,8 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
             }),
             signal: abortController.signal,
           })
-          const coverSignData = await coverSignRes.json()
-          if (coverSignRes.ok) {
+          const { ok: coverSignOk, data: coverSignData } = await safeFetchJson(coverSignRes)
+          if (coverSignOk && coverSignData?.path && coverSignData?.token) {
             const supabase = createClient()
             const { error: coverUploadError } = await supabase.storage
               .from('covers')
@@ -1230,19 +1308,26 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: bookTitle.trim(),
-          author: bookAuthor.trim(),
-          fileName: bookPdfFile.name,
-          fileSize: bookPdfFile.size,
+          title: cleanTitle,
+          author: cleanAuthor,
+          fileName: pdfFile.name,
+          fileSize: pdfFile.size,
           contentType: 'application/pdf',
           description: bookDescription.trim() || undefined,
         }),
         signal: abortController.signal,
       })
 
-      const initData = await initRes.json()
-      if (!initRes.ok) {
-        throw new Error(initData.error || 'Failed to initiate Cloudflare R2 multipart upload.')
+      const { ok: initOk, data: initData, error: initError, field: initField } = await safeFetchJson(initRes)
+      if (!initOk || !initData?.uploadId || !initData?.fileKey) {
+        if (initField) {
+          const fKey = initField === 'fileName' || initField === 'fileSize' ? 'pdf' : initField
+          setBookFieldErrors({ [fKey]: initError || 'Invalid field' })
+          setBookMessage("We couldn't upload this eBook. Please check the highlighted fields and try again.")
+        } else {
+          setBookMessage(`Error: ${initError || 'Failed to initiate Cloudflare R2 multipart upload.'}`)
+        }
+        return
       }
 
       const { uploadId, fileKey, partSize, totalParts } = initData
@@ -1267,9 +1352,9 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
           }),
           signal: abortController.signal,
         })
-        const signData = await signRes.json()
-        if (!signRes.ok || !signData.parts) {
-          throw new Error(signData.error || 'Failed to generate signed URLs for eBook parts.')
+        const { ok: signOk, data: signData, error: signError } = await safeFetchJson(signRes)
+        if (!signOk || !signData?.parts) {
+          throw new Error(signError || 'Failed to generate signed URLs for eBook parts.')
         }
         for (const item of signData.parts) {
           signedPartsMap.set(item.partNumber, item.presignedUrl)
@@ -1279,7 +1364,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
       // 4. Upload chunks directly from browser to Cloudflare R2 with concurrency = 2
       const completedParts: { PartNumber: number; ETag: string }[] = []
       let uploadedBytes = 0
-      const totalBytes = bookPdfFile.size
+      const totalBytes = pdfFile.size
       const concurrency = Math.min(2, totalParts)
       let nextIndex = 0
 
@@ -1290,7 +1375,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
           const partNumber = currentIndex + 1
           const start = currentIndex * partSize
           const end = Math.min(start + partSize, totalBytes)
-          const chunkBlob = bookPdfFile.slice(start, end)
+          const chunkBlob = pdfFile.slice(start, end)
           const chunkSize = end - start
           const presignedUrl = signedPartsMap.get(partNumber)
 
@@ -1340,14 +1425,14 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
               signal: abortController.signal,
             })
 
-            const fallbackData = await fallbackRes.json()
-            if (!fallbackRes.ok || !fallbackData.etag) {
+            const { ok: fbOk, data: fbData, error: fbError } = await safeFetchJson(fallbackRes)
+            if (!fbOk || !fbData?.etag) {
               throw new Error(
-                fallbackData.error ||
+                fbError ||
                 `Failed to upload chunk ${partNumber} to Cloudflare R2 (HTTP ${fallbackRes.status})`
               )
             }
-            etag = fallbackData.etag
+            etag = fbData.etag
           }
 
           if (!etag) {
@@ -1375,17 +1460,17 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
           uploadId,
           fileKey,
           parts: completedParts,
-          title: bookTitle.trim(),
+          title: cleanTitle,
           subtitle: bookSubtitle.trim() || null,
-          author: bookAuthor.trim(),
+          author: cleanAuthor,
           publisher: bookPublisher.trim() || 'HBTU Digital Press',
           edition: bookEdition.trim() || null,
-          publicationYear: Number(bookYear),
-          totalPages: Number(bookPages),
+          publicationYear: Number(bookYear) || new Date().getFullYear(),
+          totalPages: Number(bookPages) || 100,
           description: bookDescription.trim() || null,
           coverImageUrl,
-          fileName: bookPdfFile.name,
-          fileSize: bookPdfFile.size,
+          fileName: pdfFile.name,
+          fileSize: pdfFile.size,
           mappings: academicMappings.map((g) => ({
             programId: g.programId || null,
             branchIds: g.branchIds || [],
@@ -1398,9 +1483,16 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
         signal: abortController.signal,
       })
 
-      const compData = await compRes.json()
-      if (!compRes.ok) {
-        throw new Error(compData.error || 'Failed to complete eBook upload in R2 / Supabase.')
+      const { ok: compOk, data: compData, error: compError, field: compField } = await safeFetchJson(compRes)
+      if (!compOk || !compData?.success) {
+        if (compField) {
+          const fKey = compField === 'totalPages' ? 'pages' : compField === 'publicationYear' ? 'year' : compField
+          setBookFieldErrors({ [fKey]: compError || 'Invalid field' })
+          setBookMessage("We couldn't upload this eBook. Please check the highlighted fields and try again.")
+        } else {
+          setBookMessage(`Error: ${compError || 'Failed to complete eBook upload in R2 / Supabase.'}`)
+        }
+        return
       }
 
       activeUploadRef.current = null
@@ -1412,6 +1504,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
           : 'as a General Library resource'
       setBookMessage(`✅ eBook uploaded directly to Cloudflare R2 and published successfully ${mappingSummary}!`)
       setBookSuccessId(compData.ebook?.id || compData.libraryBook?.id || '')
+      setBookFieldErrors({})
 
       // Reset form
       setBookTitle('')
@@ -1429,7 +1522,12 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
       if (abortController.signal.aborted) {
         setBookMessage('eBook upload was cancelled.')
       } else {
-        setBookMessage(`Error: ${err instanceof Error ? err.message : 'eBook upload failed'}`)
+        const errorMsg = err instanceof Error ? err.message : 'eBook upload failed'
+        if (errorMsg.includes('The string did not match the expected pattern')) {
+          setBookMessage("We couldn't upload this eBook. Please check the highlighted fields and try again.")
+        } else {
+          setBookMessage(`Error: ${errorMsg}`)
+        }
       }
     } finally {
       setBookUploading(false)
@@ -1462,8 +1560,8 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
         }),
       })
 
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to update academic mappings')
+      const { ok, data, error } = await safeFetchJson(res)
+      if (!ok) throw new Error(error || data?.error || 'Failed to update academic mappings')
 
       await loadContent()
       setEditingMessage('✅ Academic mappings updated successfully!')
@@ -1508,11 +1606,11 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
   const openFileUrl = async (bucket: string, path: string) => {
     try {
       const res = await fetch(`/api/storage/view-url?bucket=${bucket}&path=${encodeURIComponent(path)}`)
-      const data = await res.json()
-      if (data.url) {
+      const { ok, data, error } = await safeFetchJson(res)
+      if (ok && data?.url) {
         window.open(data.url, '_blank')
       } else {
-        alert('Unable to generate document viewing URL.')
+        alert(error || 'Unable to generate document viewing URL.')
       }
     } catch {
       alert('Error fetching file URL.')
@@ -2631,25 +2729,48 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
             </div>
           )}
 
-          <form onSubmit={handleUploadEbook}>
+          <form onSubmit={handleUploadEbook} noValidate>
             {/* Academic Mapping & Category (100% Optional) */}
             <AcademicMappingEditor
               mappings={academicMappings}
-              setMappings={setAcademicMappings}
+              setMappings={(val) => {
+                setAcademicMappings(val)
+                if (bookFieldErrors.mappings) setBookFieldErrors((prev) => ({ ...prev, mappings: undefined }))
+              }}
               programs={programs}
               branches={branches}
               subjects={subjects}
             />
+            {bookFieldErrors.mappings && (
+              <div style={{
+                color: '#ef4444',
+                fontSize: '0.75rem',
+                padding: '0.5rem 0.75rem',
+                background: 'rgba(239, 68, 68, 0.06)',
+                borderRadius: 'var(--radius-sm)',
+                marginBottom: '1rem',
+                border: '1px solid rgba(239, 68, 68, 0.2)',
+              }}>
+                {bookFieldErrors.mappings}
+              </div>
+            )}
 
             {/* Book Details Grid */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
               <div className="form-group">
-                <label className="form-label">Book Title</label>
+                <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Book Title *</span>
+                  {bookFieldErrors.title && <span style={{ color: '#ef4444', fontSize: '0.6875rem' }}>{bookFieldErrors.title}</span>}
+                </label>
                 <input
                   className="form-input"
+                  style={bookFieldErrors.title ? { borderColor: '#ef4444', background: 'rgba(239, 68, 68, 0.04)' } : undefined}
                   placeholder="e.g., Higher Engineering Mathematics"
                   value={bookTitle}
-                  onChange={(e) => setBookTitle(e.target.value)}
+                  onChange={(e) => {
+                    setBookTitle(e.target.value)
+                    if (bookFieldErrors.title) setBookFieldErrors((prev) => ({ ...prev, title: undefined }))
+                  }}
                   required
                 />
               </div>
@@ -2665,12 +2786,19 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
               </div>
 
               <div className="form-group">
-                <label className="form-label">Author(s)</label>
+                <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Author(s) *</span>
+                  {bookFieldErrors.author && <span style={{ color: '#ef4444', fontSize: '0.6875rem' }}>{bookFieldErrors.author}</span>}
+                </label>
                 <input
                   className="form-input"
+                  style={bookFieldErrors.author ? { borderColor: '#ef4444', background: 'rgba(239, 68, 68, 0.04)' } : undefined}
                   placeholder="e.g., Dr. B.S. Grewal"
                   value={bookAuthor}
-                  onChange={(e) => setBookAuthor(e.target.value)}
+                  onChange={(e) => {
+                    setBookAuthor(e.target.value)
+                    if (bookFieldErrors.author) setBookFieldErrors((prev) => ({ ...prev, author: undefined }))
+                  }}
                   required
                 />
               </div>
@@ -2697,22 +2825,42 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
                 <div className="form-group">
-                  <label className="form-label">Year</label>
+                  <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Year</span>
+                    {bookFieldErrors.year && <span style={{ color: '#ef4444', fontSize: '0.6875rem' }}>Invalid</span>}
+                  </label>
                   <input
                     type="number"
                     className="form-input"
+                    style={bookFieldErrors.year ? { borderColor: '#ef4444', background: 'rgba(239, 68, 68, 0.04)' } : undefined}
                     value={bookYear}
-                    onChange={(e) => setBookYear(Number(e.target.value))}
+                    onChange={(e) => {
+                      setBookYear(Number(e.target.value))
+                      if (bookFieldErrors.year) setBookFieldErrors((prev) => ({ ...prev, year: undefined }))
+                    }}
                   />
+                  {bookFieldErrors.year && (
+                    <div style={{ color: '#ef4444', fontSize: '0.6875rem', marginTop: 2 }}>{bookFieldErrors.year}</div>
+                  )}
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Est. Pages</label>
+                  <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Est. Pages</span>
+                    {bookFieldErrors.pages && <span style={{ color: '#ef4444', fontSize: '0.6875rem' }}>Invalid</span>}
+                  </label>
                   <input
                     type="number"
                     className="form-input"
+                    style={bookFieldErrors.pages ? { borderColor: '#ef4444', background: 'rgba(239, 68, 68, 0.04)' } : undefined}
                     value={bookPages}
-                    onChange={(e) => setBookPages(Number(e.target.value))}
+                    onChange={(e) => {
+                      setBookPages(Number(e.target.value))
+                      if (bookFieldErrors.pages) setBookFieldErrors((prev) => ({ ...prev, pages: undefined }))
+                    }}
                   />
+                  {bookFieldErrors.pages && (
+                    <div style={{ color: '#ef4444', fontSize: '0.6875rem', marginTop: 2 }}>{bookFieldErrors.pages}</div>
+                  )}
                 </div>
               </div>
             </div>
@@ -2792,17 +2940,21 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
               <div>
                 <label className="form-label" style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <BookOpen size={14} color="#10b981" /> eBook PDF File (Cloudflare R2 Direct)
+                    <BookOpen size={14} color="#10b981" /> eBook PDF File (Cloudflare R2 Direct) *
                   </span>
                   <span style={{ fontSize: '0.6875rem', color: '#10b981', fontWeight: 600 }}>Supports 145 MB+ (Max 500 MB)</span>
                 </label>
                 <div
                   style={{
-                    border: '2px dashed var(--border-medium)',
+                    border: bookFieldErrors.pdf ? '2px dashed #ef4444' : '2px dashed var(--border-medium)',
                     borderRadius: 'var(--radius-lg)',
                     padding: '1.5rem',
                     textAlign: 'center',
-                    background: bookPdfFile ? 'rgba(16, 185, 129, 0.05)' : 'var(--bg-secondary)',
+                    background: bookFieldErrors.pdf
+                      ? 'rgba(239, 68, 68, 0.04)'
+                      : bookPdfFile
+                      ? 'rgba(16, 185, 129, 0.05)'
+                      : 'var(--bg-secondary)',
                     minHeight: 180,
                     display: 'flex',
                     flexDirection: 'column',
@@ -2819,10 +2971,13 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                     style={{ display: 'none' }}
                     onChange={(e) => {
                       const f = e.target.files?.[0]
-                      if (f) setBookPdfFile(f)
+                      if (f) {
+                        setBookPdfFile(f)
+                        if (bookFieldErrors.pdf) setBookFieldErrors((prev) => ({ ...prev, pdf: undefined }))
+                      }
                     }}
                   />
-                  <Upload size={32} color={bookPdfFile ? '#10b981' : 'var(--text-tertiary)'} style={{ margin: '0 auto 8px' }} />
+                  <Upload size={32} color={bookFieldErrors.pdf ? '#ef4444' : bookPdfFile ? '#10b981' : 'var(--text-tertiary)'} style={{ margin: '0 auto 8px' }} />
                   {bookPdfFile ? (
                     <div>
                       <div style={{ fontWeight: 700, fontSize: '0.875rem', color: '#10b981' }}>{bookPdfFile.name}</div>
@@ -2832,13 +2987,20 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                     </div>
                   ) : (
                     <div>
-                      <div style={{ fontWeight: 600, fontSize: '0.875rem', marginBottom: 4 }}>Choose eBook PDF file</div>
+                      <div style={{ fontWeight: 600, fontSize: '0.875rem', marginBottom: 4, color: bookFieldErrors.pdf ? '#ef4444' : undefined }}>
+                        Choose eBook PDF file
+                      </div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
                         Complete textbook or monograph (Target: 145 MB+ supported)
                       </div>
                     </div>
                   )}
                 </div>
+                {bookFieldErrors.pdf && (
+                  <div style={{ color: '#ef4444', fontSize: '0.75rem', marginTop: 4, textAlign: 'center' }}>
+                    {bookFieldErrors.pdf}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -2898,7 +3060,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
             <button
               type="submit"
               className="btn btn-primary"
-              disabled={bookUploading || !bookPdfFile}
+              disabled={bookUploading}
               style={{
                 width: '100%',
                 padding: '0.75rem',
@@ -2910,6 +3072,8 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: 8,
+                opacity: bookUploading ? 0.7 : 1,
+                cursor: bookUploading ? 'not-allowed' : 'pointer',
               }}
             >
               {bookUploading ? (

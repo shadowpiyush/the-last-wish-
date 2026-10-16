@@ -11,6 +11,7 @@ import type { UserProfile } from '@/components/providers/AuthProvider'
  */
 export function isProfileComplete(profile: UserProfile | null | undefined): boolean {
   if (!profile) return false
+  if (profile.role === 'admin') return true
 
   const hasMobile = Boolean(
     profile.mobile_number &&

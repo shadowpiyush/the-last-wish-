@@ -3,19 +3,15 @@ import { createClient } from '@supabase/supabase-js'
 import { verifyAdmin } from '@/lib/auth/admin'
 import { getR2Client, getR2Config } from '@/lib/r2/client'
 import { DeleteObjectCommand } from '@aws-sdk/client-s3'
+import {
+  validateEbookMetadata,
+  validateAcademicMappings,
+  cleanUuidOrNull,
+  type ValidatedMappingGroup,
+} from '@/lib/validation/ebook'
 
-// The schema for optional ebook mapping tables is installed independently.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AdminSupabaseClient = ReturnType<typeof createClient<any>>
-
-interface MappingInput {
-  programId?: string | null
-  branchIds?: string[]
-  year?: number | null
-  semesters?: number[]
-  subjectIds?: string[]
-  category?: string | null
-}
 
 interface MappingRow {
   book_id: string
@@ -98,6 +94,11 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    const authCheck = await verifyAdmin(request)
+    if (!authCheck.isAdmin) {
+      return NextResponse.json({ error: authCheck.error, code: 'UNAUTHORIZED' }, { status: authCheck.status })
+    }
+
     const body = await request.json()
     const {
       title,
@@ -113,15 +114,39 @@ export async function POST(request: Request) {
       bookType,
       ebookFilePath,
       totalPages,
-      mappings = [], // Array of AcademicMappingGroup
+      mappings = [],
     } = body
 
-    if (!title || !author) {
+    const metaValidation = validateEbookMetadata({
+      title,
+      subtitle,
+      author,
+      publisher,
+      edition,
+      publicationYear,
+      totalPages,
+      description,
+      coverImageUrl,
+    })
+
+    if (!metaValidation.success || !metaValidation.data) {
       return NextResponse.json(
-        { error: 'Book Title and Author are required.' },
+        { error: metaValidation.error, code: metaValidation.code, field: metaValidation.field },
         { status: 400 }
       )
     }
+
+    const validMeta = metaValidation.data
+
+    const mappingValidation = validateAcademicMappings(mappings)
+    if (!mappingValidation.success || !mappingValidation.data) {
+      return NextResponse.json(
+        { error: mappingValidation.error, code: mappingValidation.code, field: mappingValidation.field },
+        { status: 400 }
+      )
+    }
+
+    const validatedMappings = mappingValidation.data
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -135,10 +160,9 @@ export async function POST(request: Request) {
     })
 
     // Academic mapping is completely OPTIONAL.
-    // Determine subject_id for backward compatibility with library_books if not-null constraint exists
     let chosenSubjectId: string | null = null
-    if (mappings.length > 0) {
-      for (const m of mappings) {
+    if (validatedMappings.length > 0) {
+      for (const m of validatedMappings) {
         if (m.subjectIds && m.subjectIds.length > 0) {
           chosenSubjectId = m.subjectIds[0]
           break
@@ -147,74 +171,66 @@ export async function POST(request: Request) {
     }
 
     // Insert Book Record
-    let newBook: { id: string } | null = null
     const bookInsertPayload: Record<string, unknown> = {
-      title: title.trim(),
-      subtitle: subtitle?.trim() || null,
-      author: author.trim(),
-      isbn: isbn?.trim() || null,
-      edition: edition?.trim() || null,
-      publisher: publisher?.trim() || 'Harcoutian Academic Press',
-      publication_year: publicationYear ? Number(publicationYear) : new Date().getFullYear(),
+      title: validMeta.title,
+      subtitle: validMeta.subtitle,
+      author: validMeta.author,
+      isbn: typeof isbn === 'string' && isbn.trim() ? isbn.trim() : null,
+      edition: validMeta.edition,
+      publisher: validMeta.publisher || 'Harcoutian Academic Press',
+      publication_year: validMeta.publicationYear,
       language: language || 'English',
-      description: description?.trim() || null,
-      cover_image_url: coverImageUrl || null,
+      description: validMeta.description,
+      cover_image_url: validMeta.coverImageUrl,
       book_type: bookType || 'Textbook',
       subject_id: chosenSubjectId,
       ebook_status: ebookFilePath ? 'available' : 'unavailable',
       ebook_file_path: ebookFilePath || null,
-      total_pages: totalPages ? Number(totalPages) : 150,
+      total_pages: validMeta.totalPages,
     }
 
-    const { data: inserted, error: insertErr } = await supabaseAdmin
+    const { data: newBook, error: insertErr } = await supabaseAdmin
       .from('library_books')
       .insert(bookInsertPayload)
       .select()
       .single()
 
-    if (insertErr) {
-      // If subject_id violates not-null constraint (e.g. migration not run yet and no subject chosen)
-      if (insertErr.message.includes('subject_id') && insertErr.message.includes('not-null')) {
-        const { data: fallbackSub } = await supabaseAdmin.from('subjects').select('id').limit(1).single()
-        if (fallbackSub) {
-          bookInsertPayload.subject_id = fallbackSub.id
-          const retryRes = await supabaseAdmin.from('library_books').insert(bookInsertPayload).select().single()
-          if (retryRes.error) throw new Error(retryRes.error.message)
-          newBook = retryRes.data
-        } else {
-          throw new Error(insertErr.message)
-        }
-      } else {
-        throw new Error(insertErr.message)
-      }
-    } else {
-      newBook = inserted
+    if (insertErr || !newBook) {
+      return NextResponse.json(
+        { error: insertErr?.message || 'Failed to create library book record.', code: 'DATABASE_SAVE_FAILED' },
+        { status: 500 }
+      )
     }
 
-    if (!newBook) throw new Error('Failed to create library book record.')
-
     // Insert normalized combination mappings into ebook_academic_mappings
-    if (newBook && mappings.length > 0) {
-      await saveAcademicMappings(supabaseAdmin, newBook.id, mappings)
+    if (newBook && validatedMappings.length > 0) {
+      await saveAcademicMappings(supabaseAdmin, newBook.id, validatedMappings)
     }
 
     // Log admin audit action
-    await supabaseAdmin.from('admin_audit_logs').insert({
-      action: `Uploaded eBook to Digital Library: ${title} (${mappings.length} mapping groups)`,
-      target_type: 'book',
-      target_id: newBook.id,
-      details: { cover_image_url: coverImageUrl, ebook_file_path: ebookFilePath, mappings_count: mappings.length },
-    }).select().maybeSingle()
+    try {
+      await supabaseAdmin.from('admin_audit_logs').insert({
+        action: `Uploaded eBook to Digital Library: ${validMeta.title} (${validatedMappings.length} mapping groups)`,
+        target_type: 'book',
+        target_id: newBook.id,
+        details: { cover_image_url: validMeta.coverImageUrl, ebook_file_path: ebookFilePath, mappings_count: validatedMappings.length },
+      }).select().maybeSingle()
+    } catch {}
 
     return NextResponse.json({ success: true, book: newBook })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to publish eBook'
-    return NextResponse.json({ error: msg }, { status: 500 })
+    return NextResponse.json({ error: msg, code: 'DATABASE_SAVE_FAILED' }, { status: 500 })
   }
 }
 
 export async function PUT(request: Request) {
   try {
+    const authCheck = await verifyAdmin(request)
+    if (!authCheck.isAdmin) {
+      return NextResponse.json({ error: authCheck.error, code: 'UNAUTHORIZED' }, { status: authCheck.status })
+    }
+
     const body = await request.json()
     const {
       id,
@@ -233,9 +249,40 @@ export async function PUT(request: Request) {
       mappings = [],
     } = body
 
-    if (!id || !title || !author) {
-      return NextResponse.json({ error: 'Book ID, Title, and Author are required.' }, { status: 400 })
+    if (!id || !cleanUuidOrNull(id)) {
+      return NextResponse.json({ error: 'A valid Book UUID is required.', code: 'INVALID_METADATA' }, { status: 400 })
     }
+
+    const metaValidation = validateEbookMetadata({
+      title,
+      subtitle,
+      author,
+      publisher,
+      edition,
+      publicationYear,
+      totalPages,
+      description,
+      coverImageUrl,
+    })
+
+    if (!metaValidation.success || !metaValidation.data) {
+      return NextResponse.json(
+        { error: metaValidation.error, code: metaValidation.code, field: metaValidation.field },
+        { status: 400 }
+      )
+    }
+
+    const validMeta = metaValidation.data
+
+    const mappingValidation = validateAcademicMappings(mappings)
+    if (!mappingValidation.success || !mappingValidation.data) {
+      return NextResponse.json(
+        { error: mappingValidation.error, code: mappingValidation.code, field: mappingValidation.field },
+        { status: 400 }
+      )
+    }
+
+    const validatedMappings = mappingValidation.data
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -245,8 +292,8 @@ export async function PUT(request: Request) {
     })
 
     let chosenSubjectId: string | null = null
-    if (mappings.length > 0) {
-      for (const m of mappings) {
+    if (validatedMappings.length > 0) {
+      for (const m of validatedMappings) {
         if (m.subjectIds && m.subjectIds.length > 0) {
           chosenSubjectId = m.subjectIds[0]
           break
@@ -256,20 +303,22 @@ export async function PUT(request: Request) {
 
     // Update book details
     const updatePayload: Record<string, unknown> = {
-      title: title.trim(),
-      subtitle: subtitle?.trim() || null,
-      author: author.trim(),
-      isbn: isbn?.trim() || null,
-      edition: edition?.trim() || null,
-      publisher: publisher?.trim() || 'Harcoutian Academic Press',
-      publication_year: publicationYear ? Number(publicationYear) : undefined,
+      title: validMeta.title,
+      subtitle: validMeta.subtitle,
+      author: validMeta.author,
+      isbn: typeof isbn === 'string' && isbn.trim() ? isbn.trim() : null,
+      edition: validMeta.edition,
+      publisher: validMeta.publisher || 'Harcoutian Academic Press',
+      publication_year: validMeta.publicationYear,
       language: language || 'English',
-      description: description?.trim() || null,
+      description: validMeta.description,
       book_type: bookType || 'Textbook',
-      total_pages: totalPages ? Number(totalPages) : undefined,
+      total_pages: validMeta.totalPages,
+      subject_id: chosenSubjectId,
     }
-    if (coverImageUrl !== undefined) updatePayload.cover_image_url = coverImageUrl
-    if (chosenSubjectId) updatePayload.subject_id = chosenSubjectId
+    if (validMeta.coverImageUrl !== undefined) {
+      updatePayload.cover_image_url = validMeta.coverImageUrl
+    }
 
     const { error: updateErr } = await supabaseAdmin
       .from('library_books')
@@ -277,24 +326,26 @@ export async function PUT(request: Request) {
       .eq('id', id)
 
     if (updateErr) {
-      return NextResponse.json({ error: updateErr.message }, { status: 400 })
+      return NextResponse.json({ error: updateErr.message, code: 'DATABASE_SAVE_FAILED' }, { status: 400 })
     }
 
     // Replace academic mappings
-    await saveAcademicMappings(supabaseAdmin, id, mappings)
+    await saveAcademicMappings(supabaseAdmin, id, validatedMappings)
 
     // Log admin audit action
-    await supabaseAdmin.from('admin_audit_logs').insert({
-      action: `Updated eBook Academic Mappings: ${title} (${mappings.length} mappings)`,
-      target_type: 'book',
-      target_id: id,
-      details: { mappings_count: mappings.length },
-    }).select().maybeSingle()
+    try {
+      await supabaseAdmin.from('admin_audit_logs').insert({
+        action: `Updated eBook Academic Mappings: ${validMeta.title} (${validatedMappings.length} mappings)`,
+        target_type: 'book',
+        target_id: id,
+        details: { mappings_count: validatedMappings.length },
+      }).select().maybeSingle()
+    } catch {}
 
     return NextResponse.json({ success: true })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to update eBook'
-    return NextResponse.json({ error: msg }, { status: 500 })
+    return NextResponse.json({ error: msg, code: 'DATABASE_SAVE_FAILED' }, { status: 500 })
   }
 }
 
@@ -302,14 +353,14 @@ export async function DELETE(request: Request) {
   try {
     const authCheck = await verifyAdmin(request)
     if (!authCheck.isAdmin) {
-      return NextResponse.json({ error: authCheck.error }, { status: authCheck.status })
+      return NextResponse.json({ error: authCheck.error, code: 'UNAUTHORIZED' }, { status: authCheck.status })
     }
 
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
 
-    if (!id) {
-      return NextResponse.json({ error: 'Book ID is required.' }, { status: 400 })
+    if (!id || !cleanUuidOrNull(id)) {
+      return NextResponse.json({ error: 'A valid Book UUID is required.', code: 'INVALID_METADATA' }, { status: 400 })
     }
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -364,7 +415,7 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ success: true, message: 'eBook deleted successfully.' })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to delete book'
-    return NextResponse.json({ error: msg }, { status: 500 })
+    return NextResponse.json({ error: msg, code: 'DATABASE_SAVE_FAILED' }, { status: 500 })
   }
 }
 
@@ -374,7 +425,7 @@ export async function DELETE(request: Request) {
 async function saveAcademicMappings(
   supabaseAdmin: AdminSupabaseClient,
   bookId: string,
-  mappings: MappingInput[],
+  mappings: ValidatedMappingGroup[],
 ) {
   try {
     // 1. Delete existing mappings for this book
@@ -386,11 +437,11 @@ async function saveAcademicMappings(
     const rowsToInsert: MappingRow[] = []
 
     for (const group of mappings) {
-      const programId = group.programId || null
-      const branches = group.branchIds && group.branchIds.length > 0 ? group.branchIds : [null]
-      const year = group.year ? Number(group.year) : null
-      const semesters = group.semesters && group.semesters.length > 0 ? group.semesters : [null]
-      const subjects = group.subjectIds && group.subjectIds.length > 0 ? group.subjectIds : [null]
+      const progId = cleanUuidOrNull(group.programId)
+      const branches = group.branchIds.length > 0 ? group.branchIds : [null]
+      const year = group.year
+      const semesters = group.semesters.length > 0 ? group.semesters : [null]
+      const subjects = group.subjectIds.length > 0 ? group.subjectIds : [null]
       const category = group.category || 'Textbook'
 
       for (const branchId of branches) {
@@ -398,11 +449,11 @@ async function saveAcademicMappings(
           for (const subId of subjects) {
             rowsToInsert.push({
               book_id: bookId,
-              program_id: programId,
-              branch_id: branchId,
+              program_id: progId,
+              branch_id: cleanUuidOrNull(branchId),
               year_number: year,
               semester_number: sem,
-              subject_id: subId,
+              subject_id: cleanUuidOrNull(subId),
               academic_category: category,
             })
           }
@@ -418,6 +469,6 @@ async function saveAcademicMappings(
       }
     }
   } catch (e) {
-    console.warn('Could not save to ebook_academic_mappings (table might not exist yet):', e)
+    console.warn('Could not save to ebook_academic_mappings:', e)
   }
 }

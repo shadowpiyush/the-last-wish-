@@ -16,7 +16,10 @@ export function getR2Config() {
 
   if (endpointEnv) {
     try {
-      const parsed = new URL(endpointEnv)
+      const urlStr = endpointEnv.startsWith('http://') || endpointEnv.startsWith('https://')
+        ? endpointEnv
+        : `https://${endpointEnv}`
+      const parsed = new URL(urlStr)
       const pathParts = parsed.pathname.split('/').filter(Boolean)
       if (pathParts.length > 0 && !process.env.R2_BUCKET_NAME) {
         bucketName = pathParts[0]
@@ -26,7 +29,7 @@ export function getR2Config() {
         accountId = parsed.hostname.split('.')[0]
       }
     } catch {
-      endpoint = endpointEnv
+      endpoint = endpointEnv.startsWith('http') ? endpointEnv : `https://${endpointEnv}`
     }
   }
 

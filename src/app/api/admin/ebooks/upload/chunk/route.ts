@@ -9,18 +9,13 @@ export const dynamic = 'force-dynamic'
  * Fallback chunk uploader route for Cloudflare R2 multipart uploads.
  * If the administrator's browser is blocked from direct R2 upload by CORS policy,
  * this endpoint proxies the individual chunk to R2 using server-side S3 credentials.
- *
- * Supports:
- * 1. Raw binary octet-stream body with query parameters (?uploadId=...&fileKey=...&partNumber=...)
- * 2. Headers (x-upload-id, x-file-key, x-part-number)
- * 3. Standard FormData body (for smaller chunks or legacy form submissions)
  */
 export async function POST(request: NextRequest) {
   try {
     const authResult = await verifyAdmin(request)
     if (!authResult.isAdmin) {
       return NextResponse.json(
-        { error: authResult.error || 'Access denied' },
+        { error: authResult.error || 'Access denied', code: 'UNAUTHORIZED' },
         { status: authResult.status }
       )
     }
@@ -59,9 +54,16 @@ export async function POST(request: NextRequest) {
     if (!uploadId || !fileKey || !partNumberStr || !buffer || buffer.length === 0) {
       return NextResponse.json(
         {
-          error:
-            'Missing required parameters (uploadId, fileKey, partNumber) or chunk body payload.',
+          error: 'Missing required parameters (uploadId, fileKey, partNumber) or chunk body payload.',
+          code: 'INVALID_METADATA',
         },
+        { status: 400 }
+      )
+    }
+
+    if (!fileKey.startsWith('ebooks/')) {
+      return NextResponse.json(
+        { error: 'Invalid fileKey path. Must be under ebooks/ directory.', code: 'INVALID_METADATA' },
         { status: 400 }
       )
     }
@@ -69,12 +71,30 @@ export async function POST(request: NextRequest) {
     const partNumber = parseInt(partNumberStr, 10)
     if (isNaN(partNumber) || partNumber < 1 || partNumber > 10000) {
       return NextResponse.json(
-        { error: 'Invalid partNumber: must be an integer between 1 and 10000.' },
+        { error: 'Invalid partNumber: must be an integer between 1 and 10000.', code: 'INVALID_CHUNK_PARAMETERS' },
         { status: 400 }
       )
     }
 
-    const { bucketName } = getR2Config()
+    // Validate PDF magic bytes on the first chunk
+    if (partNumber === 1 && buffer.length >= 5) {
+      const header = buffer.subarray(0, 5).toString('ascii')
+      if (!header.startsWith('%PDF-')) {
+        return NextResponse.json(
+          { error: 'Invalid file content: The uploaded file is not a valid PDF document.', code: 'INVALID_FILE_TYPE' },
+          { status: 400 }
+        )
+      }
+    }
+
+    const { bucketName, isConfigured } = getR2Config()
+    if (!isConfigured) {
+      return NextResponse.json(
+        { error: 'Cloudflare R2 is not configured.', code: 'STORAGE_CONFIGURATION_ERROR' },
+        { status: 503 }
+      )
+    }
+
     const client = getR2Client()
 
     const partResult = await client.send(
@@ -89,7 +109,7 @@ export async function POST(request: NextRequest) {
 
     if (!partResult.ETag) {
       return NextResponse.json(
-        { error: `Cloudflare R2 failed to return an ETag for part ${partNumber}` },
+        { error: `Cloudflare R2 failed to return an ETag for part ${partNumber}`, code: 'STORAGE_UPLOAD_FAILED' },
         { status: 500 }
       )
     }
@@ -102,7 +122,10 @@ export async function POST(request: NextRequest) {
   } catch (error: unknown) {
     console.error('Error uploading chunk fallback to R2:', error)
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to upload chunk to Cloudflare R2.' },
+      {
+        error: error instanceof Error ? error.message : 'Failed to upload chunk to Cloudflare R2.',
+        code: 'STORAGE_UPLOAD_FAILED',
+      },
       { status: 500 }
     )
   }
