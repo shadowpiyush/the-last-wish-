@@ -11,15 +11,20 @@ import {
   X,
   Lock,
   Maximize2,
+  GraduationCap,
 } from 'lucide-react'
 
-interface NoteSubject {
+export interface NoteSubject {
   id: string
   subject_code: string
   subject_name: string
+  semester_number?: number
+  year_number?: number
+  branches?: { id: string; name: string; code: string } | null
+  programs?: { id: string; name: string; short_code: string } | null
 }
 
-interface Note {
+export interface Note {
   id: string
   title: string
   description: string | null
@@ -28,6 +33,7 @@ interface Note {
   file_size: number
   view_count: number
   created_at: string
+  status?: string
   subjects: NoteSubject | NoteSubject[] | null
 }
 
@@ -37,9 +43,30 @@ interface Program {
   short_code: string
 }
 
+interface Branch {
+  id: string
+  program_id: string
+  name: string
+  code: string
+}
+
+interface UserProfile {
+  id: string
+  full_name: string
+  role: string
+  program_id?: string | null
+  branch_id?: string | null
+  current_year?: number | null
+  current_semester?: number | null
+  branches?: { id: string; name: string; code: string } | null
+  programs?: { id: string; name: string; short_code: string } | null
+}
+
 interface NotesClientProps {
   initialNotes: Note[]
   programs: Program[]
+  branches?: Branch[]
+  userProfile?: UserProfile | null
 }
 
 function formatFileSize(bytes: number): string {
@@ -48,10 +75,13 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / 1048576).toFixed(1)} MB`
 }
 
-export function NotesClient({ initialNotes }: NotesClientProps) {
+export function NotesClient({ initialNotes, programs, branches = [], userProfile }: NotesClientProps) {
   const [searchQuery, setSearchQuery] = useState('')
+  const [selectedBranch, setSelectedBranch] = useState<string>('all')
   const [loadingNoteId, setLoadingNoteId] = useState<string | null>(null)
   const [activeReadingNote, setActiveReadingNote] = useState<{ note: Note; url: string } | null>(null)
+
+  const isAdmin = userProfile?.role === 'admin'
 
   // Prevent download and print keyboard shortcuts while reader is open
   useEffect(() => {
@@ -88,22 +118,29 @@ export function NotesClient({ initialNotes }: NotesClientProps) {
   }
 
   const filteredNotes = initialNotes.filter((note) => {
+    const subject = Array.isArray(note.subjects) ? note.subjects[0] : note.subjects
+    const branchCode = subject?.branches?.code
+
+    if (isAdmin && selectedBranch !== 'all' && branchCode !== selectedBranch) {
+      return false
+    }
+
     if (!searchQuery) return true
     const q = searchQuery.toLowerCase()
-    const subject = Array.isArray(note.subjects) ? note.subjects[0] : note.subjects
     return (
       note.title.toLowerCase().includes(q) ||
       note.description?.toLowerCase().includes(q) ||
       subject?.subject_code.toLowerCase().includes(q) ||
-      subject?.subject_name.toLowerCase().includes(q)
+      subject?.subject_name.toLowerCase().includes(q) ||
+      branchCode?.toLowerCase().includes(q)
     )
   })
 
   return (
     <div>
-      {/* Search bar */}
-      <div className="glass-card" style={{ padding: '1rem', marginBottom: '1.5rem' }}>
-        <div style={{ position: 'relative' }}>
+      {/* Search & Filter bar */}
+      <div className="glass-card" style={{ padding: '1rem', marginBottom: '1.5rem', display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 260 }}>
           <Search size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
           <input
             type="text"
@@ -114,6 +151,23 @@ export function NotesClient({ initialNotes }: NotesClientProps) {
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
+
+        {isAdmin && branches.length > 0 && (
+          <div style={{ minWidth: 180 }}>
+            <select
+              className="form-input"
+              value={selectedBranch}
+              onChange={(e) => setSelectedBranch(e.target.value)}
+            >
+              <option value="all">All Branches ({initialNotes.length})</option>
+              {branches.map(b => (
+                <option key={b.id} value={b.code}>
+                  {b.code} - {b.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* Notes grid */}
@@ -125,6 +179,9 @@ export function NotesClient({ initialNotes }: NotesClientProps) {
         }}>
           {filteredNotes.map((note) => {
             const subject = Array.isArray(note.subjects) ? note.subjects[0] : note.subjects
+            const branchCode = subject?.branches?.code
+            const progCode = subject?.programs?.short_code
+
             return (
               <div key={note.id} className="glass-card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
@@ -147,6 +204,16 @@ export function NotesClient({ initialNotes }: NotesClientProps) {
                       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 4 }}>
                         <span className="badge badge-maroon" style={{ fontSize: '0.625rem' }}>{subject.subject_code}</span>
                         <span className="badge badge-neutral" style={{ fontSize: '0.625rem' }}>{subject.subject_name}</span>
+                        {branchCode && (
+                          <span className="badge badge-blue" style={{ fontSize: '0.625rem' }}>
+                            {progCode ? `${progCode} ` : ''}{branchCode}
+                          </span>
+                        )}
+                        {subject.semester_number && (
+                          <span className="badge badge-yellow" style={{ fontSize: '0.625rem' }}>
+                            Sem {subject.semester_number}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -154,7 +221,7 @@ export function NotesClient({ initialNotes }: NotesClientProps) {
 
                 {note.description && (
                   <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
-                    {note.description.slice(0, 120)}{note.description.length > 120 ? '...' : ''}
+                    {note.description.slice(0, 140)}{note.description.length > 140 ? '...' : ''}
                   </p>
                 )}
 
@@ -220,10 +287,10 @@ export function NotesClient({ initialNotes }: NotesClientProps) {
         <div className="glass-card" style={{ textAlign: 'center', padding: '4rem 2rem' }}>
           <FileText size={40} color="var(--text-tertiary)" style={{ margin: '0 auto 1rem auto' }} />
           <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '0.5rem' }}>
-            {searchQuery ? 'No Notes Found' : 'No Notes Published Yet'}
+            {searchQuery || (isAdmin && selectedBranch !== 'all') ? 'No Notes Found' : 'No Notes Published for Your Branch'}
           </h2>
           <p style={{ fontSize: '0.875rem', color: 'var(--text-tertiary)' }}>
-            {searchQuery ? 'Try a different search term.' : 'Be the first to contribute study notes!'}
+            {searchQuery ? 'Try a different search term.' : 'Study notes for your curriculum subjects will appear here as soon as they are published.'}
           </p>
         </div>
       )}
@@ -248,81 +315,78 @@ export function NotesClient({ initialNotes }: NotesClientProps) {
           <div
             style={{
               width: '100%',
-              maxWidth: '1100px',
+              maxWidth: '960px',
               height: '92vh',
-              background: '#0d1117',
+              backgroundColor: '#0f172a',
+              borderRadius: 'var(--radius-lg)',
               border: '1px solid var(--border-color)',
-              borderRadius: '16px',
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
-              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7)',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Top Toolbar */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '0.875rem 1.25rem',
-                borderBottom: '1px solid var(--border-color)',
-                background: 'rgba(255, 255, 255, 0.03)',
-              }}
-            >
+            {/* Modal header */}
+            <div style={{
+              padding: '0.75rem 1.25rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              borderBottom: '1px solid var(--border-light)',
+              background: '#1e293b',
+            }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                <BookOpen size={18} color="#10b981" />
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: '0.875rem', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {activeReadingNote.note.title}
-                  </div>
-                  <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>
-                    Digital Study Viewer &bull; Read-Only Mode (Downloading Disabled)
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <a
-                  href={activeReadingNote.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn btn-secondary"
-                  style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                  title="Open in new full screen tab"
-                >
-                  <Maximize2 size={13} /> Full Screen
-                </a>
-                <span
-                  className="badge badge-neutral"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.6875rem', padding: '0.25rem 0.6rem' }}
-                >
-                  <Lock size={12} color="#10b981" /> Read Only
+                <span className="badge badge-green" style={{ fontSize: '0.625rem', padding: '0.2rem 0.5rem' }}>
+                  <Lock size={10} style={{ display: 'inline', marginRight: 3 }} /> Secure Reader
                 </span>
+                <span style={{
+                  fontSize: '0.875rem',
+                  fontWeight: 700,
+                  color: '#f8fafc',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}>
+                  {activeReadingNote.note.title}
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const iframe = document.getElementById('note-viewer-frame') as HTMLIFrameElement
+                    if (iframe?.requestFullscreen) iframe.requestFullscreen()
+                  }}
+                  className="btn btn-secondary"
+                  style={{ padding: '0.35rem 0.65rem', fontSize: '0.75rem', color: '#94a3b8' }}
+                  title="Full Screen"
+                >
+                  <Maximize2 size={13} />
+                </button>
                 <button
                   type="button"
                   onClick={() => setActiveReadingNote(null)}
                   className="btn btn-secondary"
-                  style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                  style={{ padding: '0.35rem 0.65rem', fontSize: '0.75rem', color: '#94a3b8' }}
                 >
-                  <X size={14} /> Close
+                  <X size={15} />
                 </button>
               </div>
             </div>
 
-            {/* Embedded PDF iframe with toolbar disabled */}
-            <div style={{ flex: 1, position: 'relative', background: '#161b22' }}>
-              <iframe
-                src={`${activeReadingNote.url}#toolbar=0&navpanes=0&scrollbar=1`}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  border: 'none',
-                }}
-                title={activeReadingNote.note.title}
-              />
-            </div>
+            {/* Embedded PDF Viewer with download/print controls suppressed */}
+            <iframe
+              id="note-viewer-frame"
+              src={`${activeReadingNote.url}#toolbar=0&navpanes=0&scrollbar=1`}
+              title={activeReadingNote.note.title}
+              style={{
+                width: '100%',
+                flex: 1,
+                border: 'none',
+                background: '#334155',
+              }}
+            />
           </div>
         </div>
       )}

@@ -90,7 +90,33 @@ interface NoteItem {
     id: string
     subject_code: string
     subject_name: string
+    semester_number?: number
+    year_number?: number
+    branches?: { id: string; name: string; code: string } | null
+    programs?: { id: string; name: string; short_code: string } | null
   }
+}
+
+export interface CentralizedResourceItem {
+  filePath: string
+  title: string
+  description: string | null
+  fileSize: number
+  fileType: string
+  status: string
+  createdAt: string
+  subjectCode: string
+  subjectName: string
+  assignedBranches: Array<{
+    noteId: string
+    subjectId: string
+    branchCode: string
+    branchName: string
+    programCode: string
+    year: number
+    semester: number
+  }>
+  noteIds: string[]
 }
 
 export interface AcademicMappingRecord {
@@ -920,6 +946,11 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
 
   // Manage Content State
   const [uploadedNotes, setUploadedNotes] = useState<NoteItem[]>([])
+  const [centralizedResources, setCentralizedResources] = useState<CentralizedResourceItem[]>([])
+  const [managingResource, setManagingResource] = useState<CentralizedResourceItem | null>(null)
+  const [replaceFile, setReplaceFile] = useState<File | null>(null)
+  const [replaceUploading, setReplaceUploading] = useState(false)
+  const [addBranchSubjectId, setAddBranchSubjectId] = useState('')
   const [uploadedBooks, setUploadedBooks] = useState<BookItem[]>([])
   const [contentLoading, setContentLoading] = useState(false)
 
@@ -1067,7 +1098,10 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
         fetch('/api/admin/notes').then(safeFetchJson),
         fetch('/api/admin/ebooks').then(safeFetchJson),
       ])
-      if (resNotes?.ok && resNotes.data?.notes) setUploadedNotes(resNotes.data.notes)
+      if (resNotes?.ok) {
+        if (resNotes.data?.notes) setUploadedNotes(resNotes.data.notes)
+        if (resNotes.data?.centralizedResources) setCentralizedResources(resNotes.data.centralizedResources)
+      }
       if (resBooks?.ok && resBooks.data?.books) setUploadedBooks(resBooks.data.books)
     } catch (e) {
       console.error('Failed to load uploaded content:', e)
@@ -1573,6 +1607,142 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
       setEditingMessage(`Error: ${err instanceof Error ? err.message : 'Failed to update mappings'}`)
     } finally {
       setEditingSaving(false)
+    }
+  }
+
+  // Toggle publication status of study resource
+  const handleToggleResourceStatus = async (resource: CentralizedResourceItem) => {
+    try {
+      const res = await fetch('/api/admin/notes', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'toggle_status',
+          filePath: resource.filePath,
+          status: resource.status,
+        }),
+      })
+      if (res.ok) {
+        await loadContent()
+      }
+    } catch (e) {
+      console.error('Failed to toggle resource status:', e)
+    }
+  }
+
+  // Delete centralized study resource across all branches
+  const handleDeleteResource = async (filePath: string) => {
+    if (!confirm('Are you sure you want to delete this study resource? This will remove all branch assignments and delete the physical storage file.')) return
+    try {
+      const res = await fetch(`/api/admin/notes?deleteEntireResource=true&filePath=${encodeURIComponent(filePath)}`, {
+        method: 'DELETE',
+      })
+      if (res.ok) {
+        await loadContent()
+      }
+    } catch (e) {
+      console.error('Failed to delete study resource:', e)
+    }
+  }
+
+  // Remove single branch assignment
+  const handleRemoveBranchAssignment = async (noteId: string) => {
+    if (!confirm('Remove access for this branch? Other branch assignments and the PDF file will be preserved.')) return
+    try {
+      const res = await fetch(`/api/admin/notes?id=${noteId}`, { method: 'DELETE' })
+      if (res.ok) {
+        await loadContent()
+        if (managingResource) {
+          setManagingResource((prev) => prev ? {
+            ...prev,
+            assignedBranches: prev.assignedBranches.filter((b) => b.noteId !== noteId),
+          } : null)
+        }
+      }
+    } catch (e) {
+      console.error('Failed to remove branch assignment:', e)
+    }
+  }
+
+  // Add branch assignment to resource
+  const handleAddBranchAssignment = async (filePath: string, subjectId: string) => {
+    if (!subjectId) return
+    try {
+      const res = await fetch('/api/admin/notes', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'add_mapping',
+          filePath,
+          subjectId,
+        }),
+      })
+      if (res.ok) {
+        setAddBranchSubjectId('')
+        await loadContent()
+      }
+    } catch (e) {
+      console.error('Failed to add branch assignment:', e)
+    }
+  }
+
+  // Replace PDF for resource
+  const handleReplacePdf = async (filePath: string, file: File) => {
+    if (!file) return
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      alert('Only PDF files are allowed.')
+      return
+    }
+    if (file.size > MAX_FILE_SIZE) {
+      alert('File exceeds maximum 50 MB limit.')
+      return
+    }
+
+    setReplaceUploading(true)
+    try {
+      // 1. Get signed upload URL
+      const signRes = await fetch('/api/admin/storage/signed-upload-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bucket: 'notes',
+          fileName: file.name,
+          contentType: 'application/pdf',
+          fileSize: file.size,
+        }),
+      })
+      const signData = await signRes.json()
+      if (!signRes.ok) throw new Error(signData.error || 'Failed to initialize upload')
+
+      // 2. Upload to storage
+      const supabase = createClient()
+      const { error: uploadError } = await supabase.storage
+        .from('notes')
+        .uploadToSignedUrl(signData.path, signData.token, file, { upsert: true })
+      if (uploadError) throw new Error(`Upload failed: ${uploadError.message}`)
+
+      // 3. Patch notes
+      const patchRes = await fetch('/api/admin/notes', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'replace_pdf',
+          filePath,
+          newFilePath: signData.path,
+          newFileSize: file.size,
+        }),
+      })
+
+      if (patchRes.ok) {
+        alert('PDF replaced successfully across all branch assignments!')
+        setReplaceFile(null)
+        setManagingResource(null)
+        await loadContent()
+      }
+    } catch (err: unknown) {
+      alert(`Error replacing PDF: ${err instanceof Error ? err.message : 'Upload failed'}`)
+    } finally {
+      setReplaceUploading(false)
     }
   }
 
@@ -3097,7 +3267,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
           <div className="glass-card" style={{ padding: '1.5rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
               <h2 style={{ fontSize: '1.125rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <FileText size={18} color="#10b981" /> Published Study Notes ({uploadedNotes.length})
+                <FileText size={18} color="#10b981" /> Published Study Resources ({centralizedResources.length || uploadedNotes.length})
               </h2>
               <button
                 type="button"
@@ -3105,12 +3275,119 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                 className="btn btn-secondary"
                 style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem' }}
               >
-                + Upload New Note
+                + Upload New Resource
               </button>
             </div>
 
             {contentLoading ? (
               <div style={{ textAlign: 'center', padding: '2rem' }}><Loader2 size={24} className="animate-spin" /></div>
+            ) : centralizedResources.length > 0 ? (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border-light)' }}>
+                      <th style={{ textAlign: 'left', padding: '0.6rem 0.5rem', color: 'var(--text-tertiary)' }}>Resource Title</th>
+                      <th style={{ textAlign: 'left', padding: '0.6rem 0.5rem', color: 'var(--text-tertiary)' }}>Subject</th>
+                      <th style={{ textAlign: 'left', padding: '0.6rem 0.5rem', color: 'var(--text-tertiary)' }}>Assigned Branches</th>
+                      <th style={{ textAlign: 'center', padding: '0.6rem 0.5rem', color: 'var(--text-tertiary)' }}>Curriculum</th>
+                      <th style={{ textAlign: 'center', padding: '0.6rem 0.5rem', color: 'var(--text-tertiary)' }}>Upload Date</th>
+                      <th style={{ textAlign: 'center', padding: '0.6rem 0.5rem', color: 'var(--text-tertiary)' }}>Size</th>
+                      <th style={{ textAlign: 'center', padding: '0.6rem 0.5rem', color: 'var(--text-tertiary)' }}>Status</th>
+                      <th style={{ textAlign: 'right', padding: '0.6rem 0.5rem', color: 'var(--text-tertiary)' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {centralizedResources.map((res) => {
+                      const branchCodes = Array.from(new Set(res.assignedBranches.map(b => b.branchCode)))
+                      const semesters = Array.from(new Set(res.assignedBranches.map(b => b.semester).filter(Boolean)))
+                      const years = Array.from(new Set(res.assignedBranches.map(b => b.year).filter(Boolean)))
+
+                      return (
+                        <tr key={res.filePath} style={{ borderBottom: '1px solid var(--border-light)' }}>
+                          <td style={{ padding: '0.6rem 0.5rem', fontWeight: 600, minWidth: 200 }}>
+                            <div>{res.title}</div>
+                            <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', fontFamily: 'monospace' }}>
+                              {res.filePath}
+                            </div>
+                          </td>
+                          <td style={{ padding: '0.6rem 0.5rem', minWidth: 160 }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <span className="badge badge-maroon" style={{ fontSize: '0.625rem', width: 'fit-content' }}>
+                                {res.subjectCode}
+                              </span>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                {res.subjectName}
+                              </span>
+                            </div>
+                          </td>
+                          <td style={{ padding: '0.6rem 0.5rem', minWidth: 160 }}>
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                              {branchCodes.map(bc => (
+                                <span key={bc} className="badge badge-blue" style={{ fontSize: '0.625rem' }}>
+                                  {bc}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td style={{ padding: '0.6rem 0.5rem', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                            <span className="badge badge-yellow" style={{ fontSize: '0.625rem' }}>
+                              {years.length > 0 ? `Yr ${years.join(',')}` : ''} {semesters.length > 0 ? `Sem ${semesters.join(',')}` : ''}
+                            </span>
+                          </td>
+                          <td style={{ padding: '0.6rem 0.5rem', textAlign: 'center', fontSize: '0.75rem', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                            {new Date(res.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          </td>
+                          <td style={{ padding: '0.6rem 0.5rem', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                            {(res.fileSize / (1024 * 1024)).toFixed(1)} MB
+                          </td>
+                          <td style={{ padding: '0.6rem 0.5rem', textAlign: 'center' }}>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleResourceStatus(res)}
+                              className={`badge ${res.status === 'published' ? 'badge-green' : 'badge-neutral'}`}
+                              style={{ cursor: 'pointer', border: 'none', fontSize: '0.625rem' }}
+                              title="Click to toggle status"
+                            >
+                              {res.status}
+                            </button>
+                          </td>
+                          <td style={{ padding: '0.6rem 0.5rem', textAlign: 'right' }}>
+                            <div style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                              <button
+                                type="button"
+                                onClick={() => openFileUrl('notes', res.filePath)}
+                                className="btn btn-secondary"
+                                style={{ padding: '0.25rem 0.5rem', fontSize: '0.6875rem' }}
+                                title="View PDF in reader"
+                              >
+                                <ExternalLink size={12} /> View
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setManagingResource(res)}
+                                className="btn btn-secondary"
+                                style={{ padding: '0.25rem 0.5rem', fontSize: '0.6875rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                                title="Manage branch assignments and replace PDF"
+                              >
+                                <SlidersHorizontal size={11} /> Assignments
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteResource(res.filePath)}
+                                className="btn btn-secondary"
+                                style={{ padding: '0.25rem 0.5rem', fontSize: '0.6875rem', color: '#e11d48' }}
+                                title="Delete entire resource and file"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             ) : uploadedNotes.length > 0 ? (
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
@@ -3439,6 +3716,209 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                       )}
                     </button>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ──────────────── MANAGE CENTRALIZED STUDY RESOURCE MODAL ──────────────── */}
+          {managingResource && (
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                backgroundColor: 'rgba(0, 0, 0, 0.85)',
+                backdropFilter: 'blur(6px)',
+                zIndex: 9999,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: '1rem',
+              }}
+              onClick={() => setManagingResource(null)}
+            >
+              <div
+                style={{
+                  width: '100%',
+                  maxWidth: '780px',
+                  maxHeight: '90vh',
+                  background: '#0d1117',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '16px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  overflow: 'hidden',
+                  boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7)',
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Modal Header */}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '1.25rem 1.5rem',
+                  borderBottom: '1px solid var(--border-light)',
+                  background: 'rgba(255, 255, 255, 0.02)',
+                }}>
+                  <div>
+                    <h3 style={{ fontSize: '1.125rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <SlidersHorizontal size={18} color="#10b981" /> Branch Assignments & PDF Management
+                    </h3>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: 2 }}>
+                      {managingResource.title} &bull; {managingResource.subjectCode} ({managingResource.subjectName})
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setManagingResource(null)}
+                    className="btn btn-secondary"
+                    style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem' }}
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
+
+                {/* Modal Body */}
+                <div style={{ padding: '1.5rem', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                  {/* Current Assigned Branches */}
+                  <div>
+                    <h4 style={{ fontSize: '0.875rem', fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <CheckCircle2 size={15} color="#10b981" /> Currently Assigned Branches ({managingResource.assignedBranches.length})
+                    </h4>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginBottom: 12 }}>
+                      Students from these verified branches can access this resource under Study Notes & Academic Syllabus.
+                    </p>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {managingResource.assignedBranches.map((b) => (
+                        <div
+                          key={b.noteId}
+                          style={{
+                            padding: '0.75rem 1rem',
+                            borderRadius: 'var(--radius-sm)',
+                            background: 'var(--bg-secondary)',
+                            border: '1px solid var(--border-light)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span className="badge badge-maroon" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+                              {b.branchCode}
+                            </span>
+                            <div>
+                              <div style={{ fontSize: '0.8125rem', fontWeight: 600 }}>{b.branchName}</div>
+                              <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>
+                                {b.programCode} &bull; Year {b.year}, Semester {b.semester} &bull; Subject ID: {b.subjectId.slice(0, 8)}...
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveBranchAssignment(b.noteId)}
+                            className="btn btn-secondary"
+                            style={{ padding: '0.3rem 0.6rem', fontSize: '0.6875rem', color: '#e11d48' }}
+                            title="Remove branch assignment without deleting the PDF"
+                          >
+                            <Trash2 size={12} /> Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Add Branch Mapping */}
+                  <div style={{ borderTop: '1px solid var(--border-light)', paddingTop: '1.25rem' }}>
+                    <h4 style={{ fontSize: '0.875rem', fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Plus size={15} color="#3b82f6" /> Add Branch Assignment
+                    </h4>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginBottom: 12 }}>
+                      Associate an additional branch curriculum subject with this existing PDF resource without duplicating storage.
+                    </p>
+
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <select
+                        className="form-input"
+                        style={{ flex: 1, fontSize: '0.8125rem' }}
+                        value={addBranchSubjectId}
+                        onChange={(e) => setAddBranchSubjectId(e.target.value)}
+                      >
+                        <option value="">-- Select a subject / branch to map --</option>
+                        {subjects
+                          .filter((s) => !managingResource.assignedBranches.some((ab) => ab.subjectId === s.id))
+                          .map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.subject_code} - {s.subject_name} ({s.branch_id ? `Branch ${s.branch_id.slice(0, 8)}` : 'General'}) · Sem {s.semester_number}
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => handleAddBranchAssignment(managingResource.filePath, addBranchSubjectId)}
+                        disabled={!addBranchSubjectId}
+                        className="btn btn-primary"
+                        style={{ padding: '0.5rem 1rem', fontSize: '0.8125rem', whiteSpace: 'nowrap' }}
+                      >
+                        Add Assignment
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Replace PDF */}
+                  <div style={{ borderTop: '1px solid var(--border-light)', paddingTop: '1.25rem' }}>
+                    <h4 style={{ fontSize: '0.875rem', fontWeight: 700, marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Upload size={15} color="#f59e0b" /> Replace Resource PDF File
+                    </h4>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginBottom: 12 }}>
+                      Upload a revised version of the PDF document. The new file will immediately replace the document for all mapped branches while preserving existing curriculum relationships.
+                    </p>
+
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <input
+                        type="file"
+                        accept="application/pdf"
+                        onChange={(e) => setReplaceFile(e.target.files?.[0] || null)}
+                        className="form-input"
+                        style={{ flex: 1, fontSize: '0.8125rem' }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => replaceFile && handleReplacePdf(managingResource.filePath, replaceFile)}
+                        disabled={!replaceFile || replaceUploading}
+                        className="btn btn-secondary"
+                        style={{ padding: '0.5rem 1rem', fontSize: '0.8125rem', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                      >
+                        {replaceUploading ? (
+                          <>
+                            <Loader2 size={13} className="animate-spin" /> Replacing...
+                          </>
+                        ) : (
+                          'Upload & Replace'
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Modal Footer */}
+                <div style={{
+                  padding: '1rem 1.5rem',
+                  borderTop: '1px solid var(--border-light)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'flex-end',
+                  background: 'rgba(255, 255, 255, 0.02)',
+                }}>
+                  <button
+                    type="button"
+                    onClick={() => setManagingResource(null)}
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.75rem', padding: '0.4rem 1rem' }}
+                  >
+                    Done
+                  </button>
                 </div>
               </div>
             </div>

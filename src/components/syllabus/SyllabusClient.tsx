@@ -207,12 +207,29 @@ export function SyllabusClient({
         .order('exam_year', { ascending: false })
         .limit(3)
 
-      // Fetch related books
-      const { data: books } = await supabase
-        .from('library_books')
-        .select('id, title, ebook_status')
-        .eq('subject_id', subjectId)
-        .limit(3)
+      // Fetch related books (direct subject_id or via ebook_academic_mappings)
+      const [{ data: directBooks }, { data: mappedBookRows }] = await Promise.all([
+        supabase
+          .from('library_books')
+          .select('id, title, ebook_status')
+          .eq('subject_id', subjectId)
+          .limit(3),
+        supabase
+          .from('ebook_academic_mappings')
+          .select('library_books (id, title, ebook_status)')
+          .eq('subject_id', subjectId)
+          .limit(3),
+      ])
+
+      const combinedBooks: RelatedBook[] = [...(directBooks || [])]
+      if (mappedBookRows) {
+        for (const row of mappedBookRows) {
+          const b = Array.isArray(row.library_books) ? row.library_books[0] : row.library_books
+          if (b && !combinedBooks.some((cb) => cb.id === b.id)) {
+            combinedBooks.push(b)
+          }
+        }
+      }
 
       if (subject) {
         setSyllabusDetail({
@@ -221,7 +238,7 @@ export function SyllabusClient({
           related: {
             notes: notes || [],
             pyqs: pyqs || [],
-            books: books || [],
+            books: combinedBooks,
           },
         })
         // Auto-expand first unit
