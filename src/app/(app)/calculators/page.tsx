@@ -50,7 +50,7 @@ function GPACalculator() {
   return (
     <div className="glass-card" style={{ padding: '1.5rem' }}>
       <h2 style={{ fontSize: '1.125rem', fontWeight: 700, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-        <Calculator size={18} color="#4f46e5" />
+        <Calculator size={18} color="var(--color-accent)" />
         SGPA / GPA Calculator
       </h2>
 
@@ -111,7 +111,7 @@ function GPACalculator() {
         textAlign: 'center',
       }}>
         <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', textTransform: 'uppercase', fontWeight: 600 }}>Your SGPA</div>
-        <div style={{ fontSize: '2.5rem', fontWeight: 900, color: '#4f46e5', lineHeight: 1.2 }}>{calculate()}</div>
+        <div style={{ fontSize: '2.5rem', fontWeight: 900, color: 'var(--color-accent)', lineHeight: 1.2 }}>{calculate()}</div>
       </div>
     </div>
   )
@@ -135,7 +135,7 @@ function AttendanceCalculator() {
   return (
     <div className="glass-card" style={{ padding: '1.5rem' }}>
       <h2 style={{ fontSize: '1.125rem', fontWeight: 700, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: 6 }}>
-        <Calculator size={18} color="#10b981" />
+        <Calculator size={18} color="var(--color-teal)" />
         Attendance Calculator
       </h2>
 
@@ -193,7 +193,7 @@ export default function CalculatorsPage() {
         </p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1.5rem' }}>
         <GPACalculator />
         <AttendanceCalculator />
       </div>

@@ -2370,9 +2370,10 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
               maxHeight: '90vh',
               overflowY: 'auto',
               padding: '1.75rem',
-              background: 'var(--bg-primary, #0f172a)',
-              border: '1px solid var(--border-medium)',
-              boxShadow: '0 20px 40px rgba(0,0,0,0.4)',
+              background: 'var(--bg-elevated)',
+              backdropFilter: 'blur(28px) saturate(160%)',
+              border: '1px solid var(--border-glass)',
+              boxShadow: 'var(--shadow-modal)',
               borderRadius: 'var(--radius-lg)',
             }}
             onClick={(e) => e.stopPropagation()}

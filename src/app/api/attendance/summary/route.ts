@@ -4,8 +4,8 @@ import { createClient as createAdminClient } from '@supabase/supabase-js'
 import {
   computeAttendanceMetrics,
   aggregateMonthlyAttendance,
-  SubjectAttendanceSummary,
-  OverallAttendanceSummary,
+  type SubjectAttendanceSummary,
+  type OverallAttendanceSummary,
 } from '@/lib/attendance/calculations'
 import {
   fetchStudentRecords,
@@ -13,6 +13,11 @@ import {
 } from '@/lib/attendance/repository'
 
 export const dynamic = 'force-dynamic'
+
+function getFirst<T>(item: T | T[] | null | undefined): T | null {
+  if (!item) return null
+  return Array.isArray(item) ? item[0] ?? null : item
+}
 
 export async function GET() {
   try {
@@ -38,46 +43,34 @@ export async function GET() {
           })
         : supabase
 
-    // 1. Fetch user's profile to understand academic context
-    const { data: profile } = await adminDb
-      .from('profiles')
-      .select('id, program_id, branch_id, current_semester, current_year, full_name, role')
-      .eq('id', user.id)
-      .maybeSingle()
+    // 1. Concurrently fetch Profile with program/branch joined, Target, and Attendance Records
+    const [profileRes, targetPercentage, attendanceRecords] = await Promise.all([
+      adminDb
+        .from('profiles')
+        .select(`
+          id, program_id, branch_id, current_semester, current_year, full_name, role,
+          branches (name, code),
+          programs (name, short_code)
+        `)
+        .eq('id', user.id)
+        .maybeSingle(),
+      getStudentTarget(user.id),
+      fetchStudentRecords(user.id),
+    ])
 
-    // 2. Fetch student's target attendance percentage
-    const targetPercentage = await getStudentTarget(user.id)
+    const profile = profileRes.data
+    const profileBranch = getFirst(profile?.branches)
+    const profileProgram = getFirst(profile?.programs)
+    const branchName = profileBranch?.name || null
+    const programName = profileProgram?.short_code || profileProgram?.name || null
 
-    // Fetch branch and program names for contextual display
-    let branchName: string | null = null
-    let programName: string | null = null
-
-    if (profile?.branch_id) {
-      const { data: branchData } = await adminDb
-        .from('branches')
-        .select('name, code')
-        .eq('id', profile.branch_id)
-        .maybeSingle()
-      if (branchData) branchName = branchData.name
-    }
-
-    if (profile?.program_id) {
-      const { data: programData } = await adminDb
-        .from('programs')
-        .select('name, short_code')
-        .eq('id', profile.program_id)
-        .maybeSingle()
-      if (programData) programName = programData.short_code || programData.name
-    }
-
-    // 3. Fetch canonical assigned subjects for student's exact academic context
+    // 2. Fetch canonical assigned subjects for student's exact academic context
     let subjectsQuery = adminDb
       .from('subjects')
       .select('id, subject_code, subject_name, credits, category, semester_number, branch_id, program_id')
       .eq('status', 'active')
 
     if (profile?.branch_id && profile?.current_semester) {
-      // Must match student's branch (or university-wide common subject) and student's semester
       subjectsQuery = subjectsQuery
         .eq('semester_number', profile.current_semester)
         .or(`branch_id.eq.${profile.branch_id},branch_id.is.null`)
@@ -93,13 +86,9 @@ export async function GET() {
       ascending: true,
     })
 
-    // Strict assigned subjects only: Never inject arbitrary subjects from other branches/semesters
     const subjectsList = rawSubjects || []
 
-    // 4. Fetch student's attendance records from authoritative repository
-    const attendanceRecords = await fetchStudentRecords(user.id)
-
-    // Build subject map from strictly assigned subjects
+    // 3. Build subject map from strictly assigned subjects
     const subjectsMap = new Map<string, { id: string; subject_name: string; subject_code: string }>()
     const assignedSubjectIdSet = new Set<string>()
     subjectsList.forEach((s) => {
@@ -107,14 +96,13 @@ export async function GET() {
       assignedSubjectIdSet.add(s.id)
     })
 
-    // 5. Aggregate subject-wise totals only for assigned subjects
+    // 4. Aggregate subject-wise totals only for assigned subjects
     const subjectCountsMap = new Map<string, { attended: number; missed: number; noClass: number }>()
     let overallAttended = 0
     let overallMissed = 0
     let overallNoClass = 0
 
     for (const record of attendanceRecords) {
-      // Only count attendance towards assigned subjects of student's current academic context
       if (!assignedSubjectIdSet.has(record.subject_id)) {
         continue
       }
@@ -149,7 +137,7 @@ export async function GET() {
       }
     })
 
-    // 6. Build Overall Metrics
+    // 5. Build Overall Metrics
     const overallTotal = overallAttended + overallMissed
     const overallMetrics = computeAttendanceMetrics(overallAttended, overallTotal, targetPercentage, overallNoClass)
     const overallSummary: OverallAttendanceSummary = {
@@ -158,10 +146,10 @@ export async function GET() {
       activeSubjectsCount: subjects.filter((s) => s.total > 0).length,
     }
 
-    // 7. Aggregate Monthly Attendance & Monthly Subject Breakdowns
+    // 6. Aggregate Monthly Attendance & Monthly Subject Breakdowns
     const monthlySummaries = aggregateMonthlyAttendance(attendanceRecords, subjectsMap, targetPercentage)
 
-    // 8. Recent 15 records
+    // 7. Recent 15 records
     const recentRecords = attendanceRecords.slice(0, 15).map((record) => {
       const sub = subjectsMap.get(record.subject_id)
       return {
@@ -177,11 +165,13 @@ export async function GET() {
       }
     })
 
+    // Return full dataset including raw records for single-trip client loading
     return NextResponse.json({
       summary: overallSummary,
       subjects,
       monthly: monthlySummaries,
       recentRecords,
+      records: attendanceRecords,
       target: targetPercentage,
       academicContext: {
         semester: profile?.current_semester || null,

@@ -42,11 +42,12 @@ export function MobileNav() {
           bottom: 0;
           left: 0;
           right: 0;
-          height: 60px;
-          background: var(--bg-glass);
-          backdrop-filter: blur(20px) saturate(180%);
-          -webkit-backdrop-filter: blur(20px) saturate(180%);
-          border-top: 1px solid var(--border-light);
+          height: 64px;
+          background: var(--bg-glass-card);
+          backdrop-filter: blur(28px) saturate(180%);
+          -webkit-backdrop-filter: blur(28px) saturate(180%);
+          border-top: 1px solid var(--border-glass);
+          box-shadow: 0 -4px 20px rgba(118, 80, 245, 0.08);
           z-index: 50;
           padding: 0 0.5rem;
           justify-content: space-around;

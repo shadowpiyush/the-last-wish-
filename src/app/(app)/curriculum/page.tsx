@@ -1,8 +1,8 @@
 export const dynamic = 'force-dynamic'
 
 import type { Metadata } from 'next'
-import { createClient } from '@/lib/supabase/server'
 import { CurriculumClient } from './CurriculumClient'
+import { getCachedPrograms, getCachedBranches, getCachedSubjectsForBranch } from '@/lib/academic/cache'
 
 export const metadata: Metadata = {
   title: 'Curriculum Roadmap',
@@ -10,25 +10,17 @@ export const metadata: Metadata = {
 }
 
 export default async function CurriculumPage() {
-  const supabase = await createClient()
-
-  // Branch metadata is small and public; loading it beside programs removes a
-  // dependent network round trip before the curriculum can render.
-  const [{ data: programs }, { data: branches }] = await Promise.all([
-    supabase.from('programs')
-      .select('id, name, short_code, total_semesters, duration_years')
-      .order('name'),
-    supabase.from('branches')
-      .select('id, program_id, name, code')
-      .order('name'),
+  // Use in-memory cached academic hierarchy
+  const [programs, branches] = await Promise.all([
+    getCachedPrograms(),
+    getCachedBranches(),
   ])
 
   const progs = programs || []
   const btech = progs.find((p) => p.short_code === 'B.Tech') || progs[0]
   const defaultProgramId = btech?.id || ''
 
-  const defaultBranches: Array<{ id: string; program_id: string; name: string; code: string }> =
-    (branches || []).filter((branch) => branch.program_id === defaultProgramId)
+  const defaultBranches = (branches || []).filter((branch) => branch.program_id === defaultProgramId)
   let defaultBranchId = ''
   let initialSubjects: Array<{
     id: string
@@ -46,14 +38,17 @@ export default async function CurriculumPage() {
     defaultBranchId = preferredBranch?.id || ''
 
     if (defaultBranchId) {
-      const { data: subjectData } = await supabase
-        .from('subjects')
-        .select('id, subject_code, subject_name, credits, hours, category, semester_number, year_number')
-        .eq('branch_id', defaultBranchId)
-        .order('semester_number')
-        .order('subject_code')
-
-      initialSubjects = subjectData || []
+      const subs = await getCachedSubjectsForBranch(defaultBranchId)
+      initialSubjects = subs.map((s) => ({
+        id: s.id,
+        subject_code: s.subject_code,
+        subject_name: s.subject_name,
+        credits: s.credits ?? 3,
+        hours: s.hours ?? 40,
+        category: s.category ?? 'Core',
+        semester_number: s.semester_number,
+        year_number: s.year_number,
+      }))
     }
   }
 
@@ -62,9 +57,9 @@ export default async function CurriculumPage() {
       <div style={{ marginBottom: '1.75rem' }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
           <span className="badge badge-indigo" style={{ padding: '0.3rem 0.75rem', fontWeight: 700 }}>
-            Curriculum Roadmap
+            Academic Roadmap
           </span>
-          <span className="badge badge-neutral">Canonical Academic Schema</span>
+          <span className="badge badge-neutral">Curriculum Structure</span>
         </div>
         <h1 style={{
           fontSize: '2rem',
@@ -73,16 +68,16 @@ export default async function CurriculumPage() {
           letterSpacing: '-0.025em',
           marginBottom: 6,
         }}>
-          Curriculum Overview
+          Curriculum Roadmap
         </h1>
         <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>
-          Explore semester-by-semester roadmaps, credits, and subject breakdowns across all HBTU degree programs and technology branches.
+          Detailed semester-wise subject distribution, credits, and evaluation schemes.
         </p>
       </div>
 
       <CurriculumClient
         initialPrograms={progs}
-        initialBranches={defaultBranches}
+        initialBranches={branches || []}
         initialProgramId={defaultProgramId}
         initialBranchId={defaultBranchId}
         initialSubjects={initialSubjects}

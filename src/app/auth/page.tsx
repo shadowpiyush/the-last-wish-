@@ -305,9 +305,9 @@ function AuthPageInner() {
           <Link href="/" className="auth-brand-link">
             <div className="brand-badge-icon" style={{
               width: 40, height: 40, borderRadius: 'var(--radius-md)',
-              background: 'linear-gradient(135deg, #4f46e5 0%, #3b82f6 50%, #06b6d4 100%)',
+              background: 'var(--color-accent-gradient)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: '#fff', boxShadow: '0 4px 14px rgba(79, 70, 229, 0.35)',
+              color: '#fff', boxShadow: '0 4px 14px rgba(118, 80, 245, 0.35)',
             }}>
               <BookOpen size={20} />
             </div>
@@ -752,7 +752,7 @@ function AuthPageInner() {
           display: flex;
           align-items: center;
           justify-content: center;
-          background: var(--bg-primary);
+          background: var(--gradient-ambient);
           padding: 2rem;
           position: relative;
           overflow: hidden;
@@ -760,12 +760,12 @@ function AuthPageInner() {
 
         .auth-ambient-glow {
           position: absolute;
-          top: 20%;
+          top: 15%;
           left: 50%;
           transform: translateX(-50%);
-          width: 600px;
-          height: 400px;
-          background: radial-gradient(ellipse, rgba(79, 70, 229, 0.12), transparent 70%);
+          width: 700px;
+          height: 480px;
+          background: radial-gradient(ellipse, rgba(118, 80, 245, 0.22), transparent 70%);
           pointer-events: none;
         }
 
@@ -785,9 +785,13 @@ function AuthPageInner() {
         }
 
         .auth-card {
-          padding: 2rem;
+          padding: 2.25rem 2rem;
           border-radius: var(--radius-xl);
-          box-shadow: var(--shadow-lg);
+          background: var(--bg-card);
+          backdrop-filter: blur(28px) saturate(180%);
+          -webkit-backdrop-filter: blur(28px) saturate(180%);
+          border: 1px solid var(--border-glass);
+          box-shadow: inset 0 1px 1px 0 var(--glass-specular), var(--shadow-app-frame);
         }
 
         .auth-card:hover {

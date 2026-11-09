@@ -15,6 +15,7 @@ import {
   User,
   Shield,
   X,
+  Sparkles,
 } from 'lucide-react'
 import { useAuth } from '@/components/providers/AuthProvider'
 
@@ -67,17 +68,18 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             <div
               className="brand-badge-icon"
               style={{
-                width: 34,
-                height: 34,
+                width: 36,
+                height: 36,
                 borderRadius: 'var(--radius-sm)',
-                background: 'linear-gradient(135deg, #4f46e5 0%, #3b82f6 50%, #06b6d4 100%)',
-                boxShadow: '0 4px 14px rgba(79, 70, 229, 0.35)',
+                background: 'var(--color-accent-gradient)',
+                boxShadow: '0 4px 14px rgba(118, 80, 245, 0.35)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
+                color: '#ffffff',
               }}
             >
-              <BookOpen size={17} />
+              <BookOpen size={18} />
             </div>
             <div>
               <div
@@ -87,6 +89,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                   letterSpacing: '-0.02em',
                   fontFamily: 'var(--font-display)',
                   lineHeight: 1.15,
+                  color: 'var(--text-primary)',
                 }}
               >
                 <span>Harcoutian</span>
@@ -98,7 +101,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                   color: 'var(--text-tertiary)',
                   textTransform: 'uppercase',
                   letterSpacing: '0.05em',
-                  fontWeight: 600,
+                  fontWeight: 700,
                   marginTop: 1,
                 }}
               >
@@ -187,11 +190,37 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         </div>
 
         <div className="sidebar-footer">
-          <div className="disclaimer-badge">
-            <strong>Independent Platform</strong>
-            <br />
-            Harcoutian Study Hub is an unofficial student portal and is not affiliated with or
-            endorsed by HBTU.
+          <div style={{
+            padding: '0.875rem',
+            borderRadius: 'var(--radius-md)',
+            background: 'var(--bg-card)',
+            border: '1px solid var(--border-glass)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.4rem',
+            boxShadow: 'inset 0 1px 1px 0 var(--glass-specular)',
+            textAlign: 'center',
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.35rem',
+              fontSize: '0.8125rem',
+              fontWeight: 700,
+              color: 'var(--color-accent)',
+              letterSpacing: '0.01em',
+            }}>
+              <Sparkles size={14} />
+              <span>Learn • Practice • Grow</span>
+            </div>
+            <div style={{
+              fontSize: '0.6875rem',
+              color: 'var(--text-tertiary)',
+              lineHeight: 1.35,
+            }}>
+              Independent student platform • Not endorsed by HBTU
+            </div>
           </div>
         </div>
 

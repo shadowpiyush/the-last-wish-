@@ -1,9 +1,32 @@
 import type { Metadata } from 'next'
+import { Plus_Jakarta_Sans, Outfit, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
 import { ThemeProvider } from '@/components/providers/ThemeProvider'
 import { ToastProvider } from '@/components/providers/ToastProvider'
 import { AuthProvider } from '@/components/providers/AuthProvider'
+import { PerformanceMonitor } from '@/components/providers/PerformanceMonitor'
 import { getBaseUrl } from '@/lib/auth/url'
+
+const plusJakartaSans = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  weight: ['300', '400', '500', '600', '700', '800'],
+  variable: '--font-sans-loaded',
+  display: 'swap',
+})
+
+const outfit = Outfit({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700', '800', '900'],
+  variable: '--font-display-loaded',
+  display: 'swap',
+})
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500', '600'],
+  variable: '--font-mono-loaded',
+  display: 'swap',
+})
 
 export const metadata: Metadata = {
   title: {
@@ -36,7 +59,7 @@ const themeScript = `
   (function() {
     try {
       var saved = localStorage.getItem('harcoutian_theme');
-      var theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      var theme = saved || 'light';
       document.documentElement.setAttribute('data-theme', theme);
     } catch(e) {}
   })();
@@ -48,7 +71,11 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${plusJakartaSans.variable} ${outfit.variable} ${jetbrainsMono.variable}`}
+    >
       <head>
         <meta name="theme-color" content="#4f46e5" />
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
@@ -57,6 +84,7 @@ export default function RootLayout({
         <ThemeProvider>
           <ToastProvider>
             <AuthProvider>
+              <PerformanceMonitor />
               {children}
             </AuthProvider>
           </ToastProvider>

@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
 import {
   Search,
   Sun,
@@ -14,6 +14,7 @@ import {
   Menu,
   BookOpen,
   ArrowRight,
+  Bell,
 } from 'lucide-react'
 import { useAuth } from '@/components/providers/AuthProvider'
 import { useTheme } from '@/components/providers/ThemeProvider'
@@ -32,6 +33,23 @@ export function Header({ onOpenSearch, onToggleSidebar, onOpenCompliance }: Head
   const [scrolled, setScrolled] = useState(false)
   const [failedAvatarSrc, setFailedAvatarSrc] = useState<string | null>(null)
   const router = useRouter()
+  const pathname = usePathname()
+
+  const pageTitles: Record<string, string> = {
+    '/dashboard': 'Dashboard',
+    '/attendance': 'Attendance',
+    '/syllabus': 'Syllabus',
+    '/curriculum': 'Curriculum',
+    '/notes': 'Study Notes',
+    '/pyq': 'PYQ Papers',
+    '/library': 'Library',
+    '/calculators': 'Calculators',
+    '/profile': 'Profile',
+    '/compliance': 'Compliance',
+  }
+
+  const currentPageTitle =
+    pageTitles[pathname] || (pathname.startsWith('/admin') ? 'Admin Center' : 'Academic Hub')
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -83,8 +101,8 @@ export function Header({ onOpenSearch, onToggleSidebar, onOpenCompliance }: Head
           <div
             className="brand-badge-icon"
             style={{
-              background: 'linear-gradient(135deg, #4f46e5 0%, #3b82f6 50%, #06b6d4 100%)',
-              boxShadow: '0 4px 14px rgba(79, 70, 229, 0.35)',
+              background: 'var(--color-accent-gradient)',
+              boxShadow: '0 4px 14px rgba(118, 80, 245, 0.35)',
             }}
           >
             <BookOpen size={18} />
@@ -96,10 +114,30 @@ export function Header({ onOpenSearch, onToggleSidebar, onOpenCompliance }: Head
             >
               <span>Harcoutian</span>
               <span className="text-gradient">Hub</span>
-              <span className="brand-tag">Unofficial</span>
             </div>
           </div>
         </Link>
+
+        {/* Current Page Indicator */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.35rem',
+            padding: '0.2rem 0.65rem',
+            borderRadius: 'var(--radius-full)',
+            background: 'var(--bg-glass-card)',
+            border: '1px solid var(--border-glass)',
+            fontSize: '0.75rem',
+            fontWeight: 600,
+            color: 'var(--text-secondary)',
+          }}
+          className="hide-on-mobile"
+        >
+          <span style={{ color: 'var(--text-tertiary)' }}>Portal</span>
+          <span style={{ opacity: 0.5 }}>/</span>
+          <span style={{ color: 'var(--color-accent)' }}>{currentPageTitle}</span>
+        </div>
       </div>
 
       <div className="header-center">
@@ -115,15 +153,14 @@ export function Header({ onOpenSearch, onToggleSidebar, onOpenCompliance }: Head
       </div>
 
       <div className="header-right">
-        {/* Compliance modal link */}
+        {/* Academic Notifications / Compliance */}
         <button
           onClick={onOpenCompliance}
-          className="btn btn-ghost"
-          style={{ fontSize: '0.8125rem', gap: '0.375rem' }}
-          title="Important Compliance Notice"
+          className="btn btn-ghost btn-icon"
+          title="Important Academic & Compliance Notices"
+          aria-label="Academic Compliance Notice"
         >
-          <Shield size={15} color="var(--color-warning)" />
-          <span style={{ display: 'none' }}>Compliance</span>
+          <Shield size={17} color="var(--color-warning)" />
         </button>
 
         {/* Theme Switcher */}
@@ -324,6 +361,9 @@ export function Header({ onOpenSearch, onToggleSidebar, onOpenCompliance }: Head
       <style>{`
         @media (max-width: 1024px) {
           #sidebar-toggle-btn { display: inline-flex !important; }
+        }
+        @media (max-width: 768px) {
+          .hide-on-mobile { display: none !important; }
         }
         @media (max-width: 640px) {
           .header-center { display: none; }

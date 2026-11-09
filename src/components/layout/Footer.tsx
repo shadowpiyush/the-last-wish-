@@ -5,8 +5,10 @@ export function Footer() {
   return (
     <footer
       style={{
-        borderTop: '1px solid var(--border-light)',
-        background: 'var(--bg-secondary)',
+        borderTop: '1px solid var(--divider)',
+        background: 'var(--bg-glass)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
         padding: '3rem 2rem 2rem 2rem',
         marginTop: 'auto',
       }}

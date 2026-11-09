@@ -51,6 +51,7 @@ interface SummaryResponse {
   subjects: SubjectAttendanceSummary[]
   monthly: MonthlyAttendanceSummary[]
   recentRecords: RawAttendanceRecord[]
+  records?: RawAttendanceRecord[]
   target: number
   academicContext: {
     semester: number | null
@@ -466,16 +467,13 @@ export function AttendanceClient() {
     triggerHaptic(10)
   }
 
-  // Fetch initial summary & all attendance records
+  // Fetch initial summary & all attendance records in single consolidated round-trip
   const loadData = useCallback(async () => {
     try {
       setLoading(true)
       setError(null)
 
-      const [summaryRes, recordsRes] = await Promise.all([
-        fetch('/api/attendance/summary'),
-        fetch('/api/attendance'),
-      ])
+      const summaryRes = await fetch('/api/attendance/summary')
 
       if (!summaryRes.ok) {
         const errJson = await summaryRes.json().catch(() => ({}))
@@ -500,10 +498,17 @@ export function AttendanceClient() {
         })
       }
 
-      if (recordsRes.ok) {
-        const recordsJson = await recordsRes.json()
-        if (Array.isArray(recordsJson.records)) {
-          setAllRecords(recordsJson.records)
+      // Populate records directly from consolidated summary response
+      if (Array.isArray(summaryJson.records)) {
+        setAllRecords(summaryJson.records)
+      } else {
+        // Fallback for older endpoints
+        const recordsRes = await fetch('/api/attendance')
+        if (recordsRes.ok) {
+          const recordsJson = await recordsRes.json()
+          if (Array.isArray(recordsJson.records)) {
+            setAllRecords(recordsJson.records)
+          }
         }
       }
     } catch (err) {
@@ -3254,7 +3259,7 @@ export function AttendanceClient() {
           max-width: 1080px;
           margin: 0 auto;
           padding: 1rem 1rem 3rem 1rem;
-          color: #f8fafc;
+          color: var(--text-primary);
           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
           box-sizing: border-box;
           user-select: none;
@@ -3288,10 +3293,10 @@ export function AttendanceClient() {
           gap: 1rem;
           padding: 1.25rem 1.5rem;
           border-radius: 1.25rem;
-          background: rgba(15, 23, 42, 0.72);
+          background: var(--bg-card);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          border: 1px solid var(--border-glass);
         }
 
         .folders-header-top {
@@ -3312,7 +3317,7 @@ export function AttendanceClient() {
           font-size: 1.75rem;
           font-weight: 800;
           letter-spacing: -0.025em;
-          color: #ffffff;
+          color: var(--text-primary);
           margin: 0;
           display: flex;
           align-items: center;
@@ -3325,9 +3330,9 @@ export function AttendanceClient() {
           gap: 0.45rem;
           padding: 0.35rem 0.75rem;
           border-radius: 9999px;
-          background: rgba(56, 189, 248, 0.1);
-          border: 1px solid rgba(56, 189, 248, 0.25);
-          color: #38bdf8;
+          background: var(--color-accent-bg);
+          border: 1px solid rgba(118, 80, 245, 0.25);
+          color: var(--color-accent);
           font-size: 0.78rem;
           font-weight: 600;
           white-space: nowrap;
@@ -3335,7 +3340,7 @@ export function AttendanceClient() {
 
         .folders-page-subtitle {
           font-size: 0.88rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           margin: 0;
         }
 
@@ -3347,8 +3352,8 @@ export function AttendanceClient() {
           gap: 1rem;
           padding: 0.9rem 1.15rem;
           border-radius: 1rem;
-          background: rgba(255, 255, 255, 0.035);
-          border: 1px solid rgba(255, 255, 255, 0.06);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-light);
         }
 
         .overall-stats-group {
@@ -3368,7 +3373,7 @@ export function AttendanceClient() {
           font-weight: 700;
           text-transform: uppercase;
           letter-spacing: 0.06em;
-          color: #94a3b8;
+          color: var(--text-secondary);
         }
 
         .overall-status-pill {
@@ -3391,13 +3396,13 @@ export function AttendanceClient() {
         .overall-pct-num {
           font-size: 1.75rem;
           font-weight: 800;
-          color: #ffffff;
+          color: var(--text-primary);
           line-height: 1;
         }
 
         .overall-ratio-text {
           font-size: 0.85rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           font-weight: 500;
         }
 
@@ -3415,16 +3420,16 @@ export function AttendanceClient() {
           font-size: 0.825rem;
           font-weight: 600;
           border-radius: 0.75rem;
-          background: rgba(255, 255, 255, 0.06);
+          background: var(--bg-secondary);
           border: 1px solid rgba(255, 255, 255, 0.12);
-          color: #e2e8f0;
+          color: var(--text-secondary);
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .target-goal-btn:hover {
           background: rgba(255, 255, 255, 0.12);
-          color: #ffffff;
+          color: var(--text-primary);
           border-color: rgba(255, 255, 255, 0.2);
         }
 
@@ -3432,10 +3437,10 @@ export function AttendanceClient() {
         .folders-toolbar {
           padding: 0.85rem 1.15rem;
           border-radius: 1rem;
-          background: rgba(15, 23, 42, 0.65);
+          background: var(--bg-card);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
-          border: 1px solid rgba(255, 255, 255, 0.08);
+          border: 1px solid var(--border-light);
           display: flex;
           flex-direction: column;
           gap: 0.75rem;
@@ -3451,7 +3456,7 @@ export function AttendanceClient() {
         .folder-search-input-wrap .search-icon {
           position: absolute;
           left: 0.85rem;
-          color: #64748b;
+          color: var(--text-tertiary);
           pointer-events: none;
         }
 
@@ -3459,9 +3464,9 @@ export function AttendanceClient() {
           width: 100%;
           padding: 0.65rem 2.25rem 0.65rem 2.45rem;
           font-size: 0.875rem;
-          color: #ffffff;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          color: var(--text-primary);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-glass);
           border-radius: 0.75rem;
           outline: none;
           transition: all 0.2s ease;
@@ -3469,13 +3474,13 @@ export function AttendanceClient() {
         }
 
         .folder-search-input::placeholder {
-          color: #64748b;
+          color: var(--text-tertiary);
         }
 
         .folder-search-input:focus {
           border-color: rgba(56, 189, 248, 0.6);
-          background: rgba(255, 255, 255, 0.08);
-          box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+          background: var(--bg-card-hover);
+          box-shadow: 0 0 0 3px var(--color-accent-bg);
         }
 
         .clear-search-btn {
@@ -3483,7 +3488,7 @@ export function AttendanceClient() {
           right: 0.75rem;
           background: transparent;
           border: none;
-          color: #94a3b8;
+          color: var(--text-secondary);
           cursor: pointer;
           display: flex;
           align-items: center;
@@ -3493,7 +3498,7 @@ export function AttendanceClient() {
         }
 
         .clear-search-btn:hover {
-          color: #ffffff;
+          color: var(--text-primary);
           background: rgba(255, 255, 255, 0.1);
         }
 
@@ -3519,9 +3524,9 @@ export function AttendanceClient() {
           border-radius: 9999px;
           font-size: 0.75rem;
           font-weight: 600;
-          background: rgba(255, 255, 255, 0.05);
+          background: var(--bg-secondary);
           border: 1px solid rgba(255, 255, 255, 0.09);
-          color: #94a3b8;
+          color: var(--text-secondary);
           cursor: pointer;
           white-space: nowrap;
           transition: all 0.2s ease;
@@ -3529,13 +3534,13 @@ export function AttendanceClient() {
 
         .filter-chip:hover {
           background: rgba(255, 255, 255, 0.09);
-          color: #ffffff;
+          color: var(--text-primary);
         }
 
         .filter-chip.active {
-          background: rgba(56, 189, 248, 0.15);
+          background: var(--color-accent-bg);
           border-color: rgba(56, 189, 248, 0.45);
-          color: #38bdf8;
+          color: var(--color-accent);
         }
 
         .chip-dot {
@@ -3553,7 +3558,7 @@ export function AttendanceClient() {
         }
 
         .chip-dot.empty {
-          background-color: #64748b;
+          background-color: var(--text-tertiary);
         }
 
         /* SECTION HEADER */
@@ -3573,13 +3578,13 @@ export function AttendanceClient() {
         }
 
         .section-folder-icon {
-          color: #38bdf8;
+          color: var(--color-accent);
         }
 
         .folders-section-title {
           font-size: 1.15rem;
           font-weight: 700;
-          color: #ffffff;
+          color: var(--text-primary);
           margin: 0;
         }
 
@@ -3588,14 +3593,14 @@ export function AttendanceClient() {
           font-weight: 600;
           padding: 0.15rem 0.5rem;
           border-radius: 9999px;
-          background: rgba(255, 255, 255, 0.08);
-          color: #94a3b8;
+          background: var(--bg-card-hover);
+          color: var(--text-secondary);
           border: 1px solid rgba(255, 255, 255, 0.05);
         }
 
         .folders-section-hint {
           font-size: 0.8rem;
-          color: #64748b;
+          color: var(--text-tertiary);
           margin: 0;
         }
 
@@ -3608,12 +3613,12 @@ export function AttendanceClient() {
           padding: 3rem 1.5rem;
           border-radius: 1.25rem;
           gap: 0.75rem;
-          background: rgba(15, 23, 42, 0.6);
-          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: var(--bg-card);
+          border: 1px solid var(--border-light);
         }
 
         .empty-folders-search .empty-icon {
-          color: #64748b;
+          color: var(--text-tertiary);
           margin-bottom: 0.25rem;
         }
 
@@ -3626,7 +3631,7 @@ export function AttendanceClient() {
 
         .empty-folders-search p {
           font-size: 0.85rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           max-width: 420px;
           margin: 0;
         }
@@ -3651,10 +3656,10 @@ export function AttendanceClient() {
           position: relative;
           padding: 1.1rem;
           border-radius: 1.25rem;
-          background: rgba(15, 23, 42, 0.72);
+          background: var(--bg-card);
           backdrop-filter: blur(14px);
           -webkit-backdrop-filter: blur(14px);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          border: 1px solid var(--border-glass);
           cursor: pointer;
           transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1),
                       box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1),
@@ -3670,11 +3675,11 @@ export function AttendanceClient() {
           position: absolute;
           top: 0;
           left: 1.1rem;
-          background: rgba(255, 255, 255, 0.08);
+          background: var(--bg-card-hover);
           border-bottom-left-radius: 0.5rem;
           border-bottom-right-radius: 0.5rem;
           padding: 0.15rem 0.55rem;
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          border: 1px solid var(--border-glass);
           border-top: none;
           backdrop-filter: blur(8px);
           -webkit-backdrop-filter: blur(8px);
@@ -3684,7 +3689,7 @@ export function AttendanceClient() {
         .folder-tab-code {
           font-size: 0.65rem;
           font-weight: 700;
-          color: #94a3b8;
+          color: var(--text-secondary);
           font-family: monospace;
           letter-spacing: 0.04em;
         }
@@ -3746,7 +3751,7 @@ export function AttendanceClient() {
         .folder-subject-title {
           font-size: 0.95rem;
           font-weight: 700;
-          color: #f8fafc;
+          color: var(--text-primary);
           line-height: 1.25;
           margin: 0;
           display: -webkit-box;
@@ -3767,18 +3772,18 @@ export function AttendanceClient() {
         .folder-code-chip {
           font-size: 0.7rem;
           font-weight: 600;
-          color: #38bdf8;
-          background: rgba(56, 189, 248, 0.1);
+          color: var(--color-accent);
+          background: var(--color-accent-bg);
           padding: 0.1rem 0.35rem;
           border-radius: 0.25rem;
-          border: 1px solid rgba(56, 189, 248, 0.2);
+          border: 1px solid rgba(118, 80, 245, 0.2);
           font-family: monospace;
         }
 
         .folder-credit-chip {
           font-size: 0.65rem;
-          color: #94a3b8;
-          background: rgba(255, 255, 255, 0.05);
+          color: var(--text-secondary);
+          background: var(--bg-secondary);
           padding: 0.1rem 0.35rem;
           border-radius: 0.25rem;
         }
@@ -3808,7 +3813,7 @@ export function AttendanceClient() {
 
         .folder-counts-sub {
           font-size: 0.7rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           white-space: nowrap;
           font-weight: 500;
         }
@@ -3816,7 +3821,7 @@ export function AttendanceClient() {
         .folder-progress-track {
           width: 100%;
           height: 5px;
-          background: rgba(255, 255, 255, 0.08);
+          background: var(--bg-card-hover);
           border-radius: 9999px;
           overflow: hidden;
         }
@@ -3836,12 +3841,12 @@ export function AttendanceClient() {
         .folder-empty-main {
           font-size: 0.8rem;
           font-weight: 600;
-          color: #94a3b8;
+          color: var(--text-secondary);
         }
 
         .folder-empty-cta {
           font-size: 0.7rem;
-          color: #38bdf8;
+          color: var(--color-accent);
           font-weight: 500;
         }
 
@@ -3849,8 +3854,8 @@ export function AttendanceClient() {
         .subject-folder-card:hover {
           transform: translateY(-3px);
           border-color: rgba(56, 189, 248, 0.4);
-          box-shadow: 0 12px 28px -6px rgba(0, 0, 0, 0.5), 0 0 15px -3px rgba(56, 189, 248, 0.2);
-          background: rgba(15, 23, 42, 0.85);
+          box-shadow: 0 12px 28px -6px rgba(0, 0, 0, 0.5), 0 0 15px -3px rgba(118, 80, 245, 0.2);
+          background: var(--bg-elevated);
         }
 
         .subject-folder-card:hover .folder-icon-plate {
@@ -3858,7 +3863,7 @@ export function AttendanceClient() {
         }
 
         .subject-folder-card:focus-visible {
-          outline: 2px solid #38bdf8;
+          outline: 2px solid var(--color-accent);
           outline-offset: 2px;
         }
 
@@ -3879,7 +3884,7 @@ export function AttendanceClient() {
           min-height: 200px;
           border-radius: 1.25rem;
           background: rgba(255, 255, 255, 0.03);
-          border: 1px solid rgba(255, 255, 255, 0.06);
+          border: 1px solid var(--border-light);
           padding: 1.1rem;
           display: flex;
           flex-direction: column;
@@ -3912,13 +3917,13 @@ export function AttendanceClient() {
           width: 44px;
           height: 44px;
           border-radius: 0.75rem;
-          background: rgba(255, 255, 255, 0.06);
+          background: var(--bg-secondary);
         }
 
         .skeleton-shimmer-line {
           height: 12px;
           border-radius: 6px;
-          background: rgba(255, 255, 255, 0.06);
+          background: var(--bg-secondary);
           margin-bottom: 0.4rem;
         }
 
@@ -3930,10 +3935,10 @@ export function AttendanceClient() {
           text-align: center;
           padding: 3.5rem 1.5rem;
           border-radius: 1.5rem;
-          background: rgba(15, 23, 42, 0.7);
+          background: var(--bg-card);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          border: 1px solid var(--border-glass);
           max-width: 580px;
           margin: 2rem auto;
           gap: 1rem;
@@ -3942,13 +3947,13 @@ export function AttendanceClient() {
         .attendance-empty-profile h2 {
           font-size: 1.35rem;
           font-weight: 700;
-          color: #ffffff;
+          color: var(--text-primary);
           margin: 0;
         }
 
         .attendance-empty-profile p {
           font-size: 0.9rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           line-height: 1.5;
           margin: 0;
         }
@@ -3970,20 +3975,20 @@ export function AttendanceClient() {
           gap: 0.4rem;
           padding: 0.85rem;
           border-radius: 0.85rem;
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-light);
           text-align: left;
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .modal-folder-item:hover {
-          background: rgba(255, 255, 255, 0.08);
+          background: var(--bg-card-hover);
           border-color: rgba(56, 189, 248, 0.4);
         }
 
         .modal-folder-item.active {
-          background: rgba(56, 189, 248, 0.12);
+          background: var(--color-accent-bg);
           border-color: rgba(56, 189, 248, 0.5);
         }
 
@@ -4002,13 +4007,13 @@ export function AttendanceClient() {
           align-items: center;
           justify-content: center;
           border: 1px solid;
-          background: rgba(255, 255, 255, 0.05);
+          background: var(--bg-secondary);
         }
 
         .modal-folder-code {
           font-size: 0.7rem;
           font-weight: 700;
-          color: #94a3b8;
+          color: var(--text-secondary);
           font-family: monospace;
         }
 
@@ -4020,7 +4025,7 @@ export function AttendanceClient() {
         .modal-folder-name {
           font-size: 0.825rem;
           font-weight: 600;
-          color: #f8fafc;
+          color: var(--text-primary);
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -4031,7 +4036,7 @@ export function AttendanceClient() {
           align-items: center;
           justify-content: space-between;
           font-size: 0.68rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
         }
 
         .modal-footer-action {
@@ -4048,17 +4053,17 @@ export function AttendanceClient() {
           padding: 0.45rem 0.75rem;
           width: auto !important;
           border-radius: 0.65rem;
-          background: rgba(56, 189, 248, 0.1);
+          background: var(--color-accent-bg);
           border: 1px solid rgba(56, 189, 248, 0.3);
-          color: #38bdf8;
+          color: var(--color-accent);
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .back-to-folders-btn:hover {
-          background: rgba(56, 189, 248, 0.2);
-          border-color: #38bdf8;
-          color: #ffffff;
+          background: rgba(118, 80, 245, 0.2);
+          border-color: var(--color-accent);
+          color: var(--text-primary);
         }
 
         .back-btn-label {
@@ -4073,9 +4078,9 @@ export function AttendanceClient() {
           gap: 0.4rem;
           padding: 0.45rem 0.75rem;
           border-radius: 0.65rem;
-          background: rgba(255, 255, 255, 0.06);
+          background: var(--bg-secondary);
           border: 1px solid rgba(255, 255, 255, 0.12);
-          color: #e2e8f0;
+          color: var(--text-secondary);
           font-size: 0.8rem;
           font-weight: 600;
           cursor: pointer;
@@ -4084,7 +4089,7 @@ export function AttendanceClient() {
 
         .all-folders-action-btn:hover {
           background: rgba(255, 255, 255, 0.12);
-          color: #ffffff;
+          color: var(--text-primary);
         }
 
         /* LIQUID GLASS HEADER */
@@ -4094,10 +4099,10 @@ export function AttendanceClient() {
           justify-content: space-between;
           padding: 0.75rem 1rem;
           border-radius: 1rem;
-          background: rgba(15, 23, 42, 0.72);
+          background: var(--bg-card);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          border: 1px solid var(--border-glass);
           margin-bottom: 0.85rem;
           gap: 0.75rem;
         }
@@ -4117,9 +4122,9 @@ export function AttendanceClient() {
           width: 38px;
           height: 38px;
           border-radius: 0.65rem;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          color: #e2e8f0;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-glass);
+          color: var(--text-secondary);
           cursor: pointer;
           transition: all 0.2s ease;
           flex-shrink: 0;
@@ -4127,7 +4132,7 @@ export function AttendanceClient() {
 
         .icon-btn:hover {
           background: rgba(255, 255, 255, 0.12);
-          color: #ffffff;
+          color: var(--text-primary);
         }
 
         .subject-info-btn {
@@ -4150,9 +4155,9 @@ export function AttendanceClient() {
           width: 38px;
           height: 38px;
           border-radius: 0.65rem;
-          background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(129, 140, 248, 0.2));
+          background: linear-gradient(135deg, rgba(118, 80, 245, 0.2), rgba(129, 140, 248, 0.2));
           border: 1px solid rgba(56, 189, 248, 0.3);
-          color: #38bdf8;
+          color: var(--color-accent);
           flex-shrink: 0;
         }
 
@@ -4171,7 +4176,7 @@ export function AttendanceClient() {
         .subject-name {
           font-size: 1.05rem;
           font-weight: 700;
-          color: #ffffff;
+          color: var(--text-primary);
           margin: 0;
           white-space: nowrap;
           overflow: hidden;
@@ -4183,14 +4188,14 @@ export function AttendanceClient() {
           font-weight: 600;
           padding: 0.12rem 0.4rem;
           border-radius: 0.35rem;
-          background: rgba(255, 255, 255, 0.08);
-          color: #94a3b8;
+          background: var(--bg-card-hover);
+          color: var(--text-secondary);
           flex-shrink: 0;
         }
 
         .subject-attendance-sub {
           font-size: 0.8rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           margin: 0;
           white-space: nowrap;
           overflow: hidden;
@@ -4199,7 +4204,7 @@ export function AttendanceClient() {
 
         .sub-pct-bold {
           font-weight: 700;
-          color: #38bdf8;
+          color: var(--color-accent);
         }
 
         .header-actions {
@@ -4217,16 +4222,16 @@ export function AttendanceClient() {
           font-weight: 600;
           padding: 0.45rem 0.85rem;
           border-radius: 0.65rem;
-          background: rgba(255, 255, 255, 0.06);
+          background: var(--bg-secondary);
           border: 1px solid rgba(255, 255, 255, 0.12);
-          color: #e2e8f0;
+          color: var(--text-secondary);
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .export-action-btn:hover {
           background: rgba(255, 255, 255, 0.12);
-          color: #ffffff;
+          color: var(--text-primary);
         }
 
         /* SEGMENTED NAVIGATION CONTROL */
@@ -4238,10 +4243,10 @@ export function AttendanceClient() {
           display: flex;
           padding: 0.3rem;
           border-radius: 0.85rem;
-          background: rgba(15, 23, 42, 0.6);
+          background: var(--bg-card);
           backdrop-filter: blur(12px);
           -webkit-backdrop-filter: blur(12px);
-          border: 1px solid rgba(255, 255, 255, 0.08);
+          border: 1px solid var(--border-light);
           gap: 0.35rem;
         }
 
@@ -4255,7 +4260,7 @@ export function AttendanceClient() {
           border-radius: 0.65rem;
           background: transparent;
           border: none;
-          color: #94a3b8;
+          color: var(--text-secondary);
           font-size: 0.88rem;
           font-weight: 600;
           cursor: pointer;
@@ -4265,7 +4270,7 @@ export function AttendanceClient() {
 
         .segmented-tab.active {
           background: rgba(255, 255, 255, 0.12);
-          color: #ffffff;
+          color: var(--text-primary);
           box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
         }
 
@@ -4283,8 +4288,8 @@ export function AttendanceClient() {
           justify-content: space-between;
           padding: 0.65rem 0.85rem;
           border-radius: 0.85rem;
-          background: rgba(15, 23, 42, 0.6);
-          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: var(--bg-card);
+          border: 1px solid var(--border-light);
           margin-bottom: 0.65rem;
         }
 
@@ -4301,8 +4306,8 @@ export function AttendanceClient() {
           width: 32px;
           height: 32px;
           border-radius: 0.5rem;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-glass);
           color: #cbd5e1;
           cursor: pointer;
           transition: all 0.2s ease;
@@ -4310,7 +4315,7 @@ export function AttendanceClient() {
 
         .cal-nav-btn:hover {
           background: rgba(255, 255, 255, 0.15);
-          color: #ffffff;
+          color: var(--text-primary);
         }
 
         .current-month-heading {
@@ -4331,15 +4336,15 @@ export function AttendanceClient() {
           font-weight: 600;
           padding: 0.3rem 0.65rem;
           border-radius: 0.5rem;
-          background: rgba(56, 189, 248, 0.12);
+          background: var(--color-accent-bg);
           border: 1px solid rgba(56, 189, 248, 0.3);
-          color: #38bdf8;
+          color: var(--color-accent);
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .today-pill-btn:hover {
-          background: rgba(56, 189, 248, 0.22);
+          background: rgba(118, 80, 245, 0.22);
         }
 
         .guide-help-btn {
@@ -4350,9 +4355,9 @@ export function AttendanceClient() {
           font-weight: 600;
           padding: 0.3rem 0.6rem;
           border-radius: 0.5rem;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          color: #94a3b8;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-glass);
+          color: var(--text-secondary);
           cursor: pointer;
           transition: all 0.2s ease;
         }
@@ -4363,7 +4368,7 @@ export function AttendanceClient() {
           justify-content: center;
           gap: 0.6rem;
           font-size: 0.76rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           padding: 0.35rem 0.5rem;
           margin-bottom: 0.65rem;
           text-align: center;
@@ -4384,7 +4389,7 @@ export function AttendanceClient() {
         }
 
         .hint-bullet.gray {
-          color: #64748b;
+          color: var(--text-tertiary);
         }
 
         .gesture-sep {
@@ -4395,10 +4400,10 @@ export function AttendanceClient() {
         .calendar-grid-card {
           padding: 0.75rem;
           border-radius: 1rem;
-          background: rgba(15, 23, 42, 0.65);
+          background: var(--bg-card);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          border: 1px solid var(--border-glass);
           margin-bottom: 1rem;
         }
 
@@ -4412,7 +4417,7 @@ export function AttendanceClient() {
         .cal-weekday-header {
           font-size: 0.75rem;
           font-weight: 600;
-          color: #94a3b8;
+          color: var(--text-secondary);
           padding: 0.3rem 0;
         }
 
@@ -4428,7 +4433,7 @@ export function AttendanceClient() {
           min-height: 58px;
           border-radius: 0.65rem;
           background: rgba(255, 255, 255, 0.025);
-          border: 1px solid rgba(255, 255, 255, 0.06);
+          border: 1px solid var(--border-light);
           padding: 0.3rem;
           display: flex;
           flex-direction: column;
@@ -4455,7 +4460,7 @@ export function AttendanceClient() {
 
         :global(.cal-day-cell.is-selected) {
           background: rgba(255, 255, 255, 0.12);
-          border-color: #38bdf8;
+          border-color: var(--color-accent);
           box-shadow: 0 0 12px rgba(56, 189, 248, 0.3);
         }
 
@@ -4469,11 +4474,11 @@ export function AttendanceClient() {
         :global(.cal-day-number) {
           font-size: 0.8rem;
           font-weight: 600;
-          color: #e2e8f0;
+          color: var(--text-secondary);
         }
 
         :global(.cal-note-dot) {
-          color: #38bdf8;
+          color: var(--color-accent);
         }
 
         :global(.cal-day-content) {
@@ -4516,7 +4521,7 @@ export function AttendanceClient() {
 
         :global(.cal-status-chip.status-no_class) {
           background: rgba(100, 116, 139, 0.22);
-          color: #94a3b8;
+          color: var(--text-secondary);
           border: 1px solid rgba(100, 116, 139, 0.35);
         }
 
@@ -4527,7 +4532,7 @@ export function AttendanceClient() {
           width: 100%;
           padding: 0.1rem 0.2rem;
           border-radius: 0.35rem;
-          background: rgba(255, 255, 255, 0.08);
+          background: var(--bg-card-hover);
         }
 
         :global(.multi-dots) {
@@ -4563,10 +4568,10 @@ export function AttendanceClient() {
         .day-detail-panel {
           padding: 0.95rem;
           border-radius: 1rem;
-          background: rgba(15, 23, 42, 0.65);
+          background: var(--bg-card);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          border: 1px solid var(--border-glass);
         }
 
         .day-detail-header {
@@ -4594,8 +4599,8 @@ export function AttendanceClient() {
           font-weight: 600;
           padding: 0.1rem 0.4rem;
           border-radius: 0.3rem;
-          background: rgba(56, 189, 248, 0.15);
-          color: #38bdf8;
+          background: var(--color-accent-bg);
+          color: var(--color-accent);
         }
 
         .add-period-btn {
@@ -4606,15 +4611,15 @@ export function AttendanceClient() {
           font-weight: 600;
           padding: 0.35rem 0.75rem;
           border-radius: 0.55rem;
-          background: rgba(56, 189, 248, 0.15);
+          background: var(--color-accent-bg);
           border: 1px solid rgba(56, 189, 248, 0.35);
-          color: #38bdf8;
+          color: var(--color-accent);
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .add-period-btn:hover {
-          background: rgba(56, 189, 248, 0.25);
+          background: rgba(118, 80, 245, 0.25);
         }
 
         .no-records-day-box {
@@ -4626,7 +4631,7 @@ export function AttendanceClient() {
 
         .no-records-text {
           font-size: 0.84rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           margin-bottom: 0.75rem;
         }
 
@@ -4672,7 +4677,7 @@ export function AttendanceClient() {
 
         .quick-action-pill.no-class {
           background: rgba(100, 116, 139, 0.15);
-          color: #94a3b8;
+          color: var(--text-secondary);
           border-color: rgba(100, 116, 139, 0.35);
         }
 
@@ -4688,7 +4693,7 @@ export function AttendanceClient() {
           justify-content: space-between;
           padding: 0.65rem 0.85rem;
           border-radius: 0.75rem;
-          background: rgba(255, 255, 255, 0.035);
+          background: var(--bg-secondary);
           border: 1px solid rgba(255, 255, 255, 0.07);
           gap: 0.5rem;
         }
@@ -4727,13 +4732,13 @@ export function AttendanceClient() {
 
         .status-pill.status-no_class {
           background: rgba(100, 116, 139, 0.15);
-          color: #94a3b8;
+          color: var(--text-secondary);
           border: 1px solid rgba(100, 116, 139, 0.3);
         }
 
         .period-notes-snippet {
           font-size: 0.75rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           font-style: italic;
         }
 
@@ -4747,8 +4752,8 @@ export function AttendanceClient() {
           width: 28px;
           height: 28px;
           border-radius: 0.45rem;
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid var(--border-glass);
+          background: var(--bg-secondary);
           display: flex;
           align-items: center;
           justify-content: center;
@@ -4775,20 +4780,20 @@ export function AttendanceClient() {
         }
 
         .status-quick-btn.no-class {
-          color: #94a3b8;
+          color: var(--text-secondary);
         }
 
         .status-quick-btn.no-class.active {
           background: rgba(100, 116, 139, 0.3);
-          border-color: #64748b;
+          border-color: var(--text-tertiary);
         }
 
         .icon-sub-btn {
           width: 28px;
           height: 28px;
           border-radius: 0.45rem;
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid var(--border-light);
+          background: var(--bg-secondary);
           color: #cbd5e1;
           display: flex;
           align-items: center;
@@ -4816,10 +4821,10 @@ export function AttendanceClient() {
         .stat-card {
           padding: 0.85rem;
           border-radius: 0.85rem;
-          background: rgba(15, 23, 42, 0.65);
+          background: var(--bg-card);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          border: 1px solid var(--border-glass);
           display: flex;
           flex-direction: column;
         }
@@ -4834,7 +4839,7 @@ export function AttendanceClient() {
 
         .stat-label {
           font-size: 0.74rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           font-weight: 600;
           margin-bottom: 0.25rem;
         }
@@ -4842,13 +4847,13 @@ export function AttendanceClient() {
         .stat-val {
           font-size: 1.45rem;
           font-weight: 800;
-          color: #ffffff;
+          color: var(--text-primary);
           line-height: 1.2;
         }
 
         .stat-sub {
           font-size: 0.68rem;
-          color: #64748b;
+          color: var(--text-tertiary);
           margin-top: 0.25rem;
         }
 
@@ -4865,15 +4870,15 @@ export function AttendanceClient() {
         }
 
         .text-accent {
-          color: #38bdf8 !important;
+          color: var(--color-accent) !important;
         }
 
         /* TARGET ANALYSIS BANNER */
         .target-analysis-banner {
           padding: 1rem;
           border-radius: 1rem;
-          background: rgba(15, 23, 42, 0.65);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          background: var(--bg-card);
+          border: 1px solid var(--border-glass);
           margin-bottom: 1rem;
         }
 
@@ -4888,7 +4893,7 @@ export function AttendanceClient() {
           width: 40px;
           height: 40px;
           border-radius: 0.75rem;
-          background: rgba(56, 189, 248, 0.15);
+          background: var(--color-accent-bg);
           border: 1px solid rgba(56, 189, 248, 0.3);
           display: flex;
           align-items: center;
@@ -4899,7 +4904,7 @@ export function AttendanceClient() {
         .target-banner-text h4 {
           font-size: 1.05rem;
           font-weight: 700;
-          color: #ffffff;
+          color: var(--text-primary);
           margin: 0 0 0.25rem 0;
         }
 
@@ -4918,7 +4923,7 @@ export function AttendanceClient() {
           display: flex;
           justify-content: space-between;
           font-size: 0.78rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           margin-bottom: 0.35rem;
         }
 
@@ -4926,7 +4931,7 @@ export function AttendanceClient() {
           width: 100%;
           height: 8px;
           border-radius: 4px;
-          background: rgba(255, 255, 255, 0.08);
+          background: var(--bg-card-hover);
           position: relative;
           overflow: visible;
         }
@@ -4942,8 +4947,8 @@ export function AttendanceClient() {
           top: -3px;
           bottom: -3px;
           width: 2px;
-          background: #38bdf8;
-          box-shadow: 0 0 6px #38bdf8;
+          background: var(--color-accent);
+          box-shadow: 0 0 6px var(--color-accent);
         }
 
         /* MONTHLY STATS & COMPARISON */
@@ -4951,8 +4956,8 @@ export function AttendanceClient() {
         .subjects-comparison-section {
           padding: 1rem;
           border-radius: 1rem;
-          background: rgba(15, 23, 42, 0.65);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          background: var(--bg-card);
+          border: 1px solid var(--border-glass);
           margin-bottom: 1rem;
         }
 
@@ -4969,7 +4974,7 @@ export function AttendanceClient() {
 
         .section-subtitle {
           font-size: 0.76rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
         }
 
         .monthly-cards-grid {
@@ -4981,8 +4986,8 @@ export function AttendanceClient() {
         .month-stat-card {
           padding: 0.85rem;
           border-radius: 0.75rem;
-          background: rgba(255, 255, 255, 0.035);
-          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-light);
           text-align: left;
           cursor: pointer;
           transition: all 0.2s ease;
@@ -5003,7 +5008,7 @@ export function AttendanceClient() {
         .m-card-name {
           font-size: 0.88rem;
           font-weight: 700;
-          color: #ffffff;
+          color: var(--text-primary);
         }
 
         .m-card-pct {
@@ -5015,7 +5020,7 @@ export function AttendanceClient() {
           width: 100%;
           height: 5px;
           border-radius: 3px;
-          background: rgba(255, 255, 255, 0.08);
+          background: var(--bg-card-hover);
           margin-bottom: 0.5rem;
           overflow: hidden;
         }
@@ -5029,7 +5034,7 @@ export function AttendanceClient() {
           display: flex;
           justify-content: space-between;
           font-size: 0.72rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
         }
 
         .subject-comparison-table-wrap {
@@ -5045,7 +5050,7 @@ export function AttendanceClient() {
         .comparison-table th {
           text-align: left;
           padding: 0.65rem 0.75rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           font-weight: 600;
           font-size: 0.74rem;
           text-transform: uppercase;
@@ -5059,7 +5064,7 @@ export function AttendanceClient() {
         }
 
         .comparison-row:hover {
-          background: rgba(255, 255, 255, 0.05);
+          background: var(--bg-secondary);
         }
 
         .comparison-row.is-active-subject {
@@ -5068,7 +5073,7 @@ export function AttendanceClient() {
 
         .comparison-table td {
           padding: 0.75rem;
-          color: #e2e8f0;
+          color: var(--text-secondary);
         }
 
         .sub-table-title {
@@ -5078,7 +5083,7 @@ export function AttendanceClient() {
 
         .sub-code-inline {
           font-size: 0.72rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
         }
 
         .status-badge {
@@ -5097,8 +5102,8 @@ export function AttendanceClient() {
           justify-content: space-between;
           padding: 0.95rem;
           border-radius: 1rem;
-          background: rgba(15, 23, 42, 0.65);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          background: var(--bg-card);
+          border: 1px solid var(--border-glass);
           margin-bottom: 0.85rem;
         }
 
@@ -5111,23 +5116,23 @@ export function AttendanceClient() {
         .tasks-title {
           font-size: 0.98rem;
           font-weight: 700;
-          color: #ffffff;
+          color: var(--text-primary);
           margin: 0;
         }
 
         .tasks-subtitle {
           font-size: 0.78rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           margin: 0;
         }
 
         .tasks-progress-text {
           font-size: 0.78rem;
           font-weight: 600;
-          color: #38bdf8;
+          color: var(--color-accent);
           padding: 0.25rem 0.65rem;
           border-radius: 0.5rem;
-          background: rgba(56, 189, 248, 0.12);
+          background: var(--color-accent-bg);
         }
 
         .tasks-list {
@@ -5142,14 +5147,14 @@ export function AttendanceClient() {
           gap: 0.85rem;
           padding: 0.85rem;
           border-radius: 0.85rem;
-          background: rgba(15, 23, 42, 0.6);
-          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: var(--bg-card);
+          border: 1px solid var(--border-light);
           cursor: pointer;
           transition: all 0.2s ease;
         }
 
         .task-item-card:hover {
-          background: rgba(255, 255, 255, 0.04);
+          background: var(--bg-secondary);
         }
 
         .task-item-card.is-completed {
@@ -5161,11 +5166,11 @@ export function AttendanceClient() {
           height: 22px;
           border-radius: 0.4rem;
           border: 1px solid rgba(255, 255, 255, 0.25);
-          background: rgba(255, 255, 255, 0.05);
+          background: var(--bg-secondary);
           display: flex;
           align-items: center;
           justify-content: center;
-          color: #ffffff;
+          color: var(--text-primary);
           cursor: pointer;
           flex-shrink: 0;
           margin-top: 2px;
@@ -5198,7 +5203,7 @@ export function AttendanceClient() {
 
         .task-desc {
           font-size: 0.8rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           margin: 0;
         }
 
@@ -5225,8 +5230,8 @@ export function AttendanceClient() {
         }
 
         .task-badge.badge-info {
-          background: rgba(56, 189, 248, 0.15);
-          color: #38bdf8;
+          background: var(--color-accent-bg);
+          color: var(--color-accent);
         }
 
         /* UNDO TOAST */
@@ -5255,7 +5260,7 @@ export function AttendanceClient() {
           gap: 0.85rem;
           padding: 0.75rem 1rem;
           border-radius: 0.75rem;
-          background: rgba(15, 23, 42, 0.92);
+          background: var(--bg-elevated);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
           border: 1px solid rgba(56, 189, 248, 0.4);
@@ -5265,7 +5270,7 @@ export function AttendanceClient() {
         .undo-message-text {
           font-size: 0.85rem;
           font-weight: 600;
-          color: #ffffff;
+          color: var(--text-primary);
         }
 
         .undo-action-btn {
@@ -5276,7 +5281,7 @@ export function AttendanceClient() {
           font-weight: 700;
           padding: 0.35rem 0.75rem;
           border-radius: 0.5rem;
-          background: #38bdf8;
+          background: var(--color-accent);
           color: #0f172a;
           border: none;
           cursor: pointer;
@@ -5284,7 +5289,7 @@ export function AttendanceClient() {
         }
 
         .undo-action-btn:hover {
-          background: #7dd3fc;
+          background: var(--color-accent-hover);
         }
 
         /* GENERAL TOAST */
@@ -5301,10 +5306,10 @@ export function AttendanceClient() {
           border-radius: 0.75rem;
           font-size: 0.85rem;
           font-weight: 600;
-          background: rgba(15, 23, 42, 0.92);
+          background: var(--bg-elevated);
           backdrop-filter: blur(16px);
           border: 1px solid rgba(255, 255, 255, 0.15);
-          color: #ffffff;
+          color: var(--text-primary);
           box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
         }
 
@@ -5320,7 +5325,7 @@ export function AttendanceClient() {
 
         .general-toast.toast-info {
           border-color: rgba(56, 189, 248, 0.5);
-          color: #38bdf8;
+          color: var(--color-accent);
         }
 
         /* MODALS & BOTTOM SHEETS */
@@ -5345,7 +5350,7 @@ export function AttendanceClient() {
           max-width: 440px;
           padding: 1.25rem;
           border-radius: 1.25rem;
-          background: rgba(15, 23, 42, 0.92);
+          background: var(--bg-elevated);
           backdrop-filter: blur(20px);
           -webkit-backdrop-filter: blur(20px);
           border: 1px solid rgba(255, 255, 255, 0.14);
@@ -5361,7 +5366,7 @@ export function AttendanceClient() {
           margin: 0 auto;
           padding: 1.25rem;
           border-radius: 1.5rem 1.5rem 0 0;
-          background: rgba(15, 23, 42, 0.96);
+          background: var(--bg-elevated);
           backdrop-filter: blur(24px);
           -webkit-backdrop-filter: blur(24px);
           border: 1px solid rgba(255, 255, 255, 0.14);
@@ -5389,13 +5394,13 @@ export function AttendanceClient() {
         .modal-title {
           font-size: 1.1rem;
           font-weight: 700;
-          color: #ffffff;
+          color: var(--text-primary);
           margin: 0 0 0.2rem 0;
         }
 
         .modal-subtitle {
           font-size: 0.8rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           margin: 0;
         }
 
@@ -5445,7 +5450,7 @@ export function AttendanceClient() {
 
         .sheet-action-tile.no-class {
           background: rgba(100, 116, 139, 0.15);
-          color: #94a3b8;
+          color: var(--text-secondary);
           border-color: rgba(100, 116, 139, 0.35);
         }
 
@@ -5477,15 +5482,15 @@ export function AttendanceClient() {
           font-weight: 600;
           padding: 0.25rem 0.65rem;
           border-radius: 0.4rem;
-          background: rgba(56, 189, 248, 0.15);
-          color: #38bdf8;
+          background: var(--color-accent-bg);
+          color: var(--color-accent);
           border: none;
           cursor: pointer;
         }
 
         .sheet-empty-text {
           font-size: 0.82rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           text-align: center;
           padding: 0.85rem;
         }
@@ -5496,8 +5501,8 @@ export function AttendanceClient() {
           justify-content: space-between;
           padding: 0.65rem 0.85rem;
           border-radius: 0.75rem;
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-light);
         }
 
         .sheet-period-left {
@@ -5515,7 +5520,7 @@ export function AttendanceClient() {
 
         .sheet-notes-text {
           font-size: 0.75rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
           font-style: italic;
         }
 
@@ -5529,8 +5534,8 @@ export function AttendanceClient() {
           width: 30px;
           height: 30px;
           border-radius: 0.5rem;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.1);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-glass);
           color: #cbd5e1;
           display: flex;
           align-items: center;
@@ -5576,9 +5581,9 @@ export function AttendanceClient() {
         .form-input {
           padding: 0.65rem 0.85rem;
           border-radius: 0.65rem;
-          background: rgba(255, 255, 255, 0.05);
+          background: var(--bg-secondary);
           border: 1px solid rgba(255, 255, 255, 0.12);
-          color: #ffffff;
+          color: var(--text-primary);
           font-size: 0.88rem;
           outline: none;
           box-sizing: border-box;
@@ -5586,8 +5591,8 @@ export function AttendanceClient() {
         }
 
         .form-input:focus {
-          border-color: #38bdf8;
-          box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+          border-color: var(--color-accent);
+          box-shadow: 0 0 0 2px rgba(118, 80, 245, 0.2);
         }
 
         .status-radio-group {
@@ -5603,9 +5608,9 @@ export function AttendanceClient() {
           gap: 0.35rem;
           padding: 0.65rem;
           border-radius: 0.65rem;
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          color: #94a3b8;
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-glass);
+          color: var(--text-secondary);
           font-size: 0.8rem;
           font-weight: 600;
           cursor: pointer;
@@ -5626,8 +5631,8 @@ export function AttendanceClient() {
 
         .radio-tile.no-class.active {
           background: rgba(100, 116, 139, 0.2);
-          color: #94a3b8;
-          border-color: #64748b;
+          color: var(--text-secondary);
+          border-color: var(--text-tertiary);
         }
 
         .modal-buttons-row {
@@ -5644,7 +5649,7 @@ export function AttendanceClient() {
           gap: 0.4rem;
           padding: 0.65rem 1.15rem;
           border-radius: 0.65rem;
-          background: #38bdf8;
+          background: var(--color-accent);
           color: #0f172a;
           font-weight: 700;
           font-size: 0.86rem;
@@ -5654,15 +5659,15 @@ export function AttendanceClient() {
         }
 
         .btn-primary:hover {
-          background: #7dd3fc;
+          background: var(--color-accent-hover);
         }
 
         .btn-secondary {
           padding: 0.65rem 1rem;
           border-radius: 0.65rem;
-          background: rgba(255, 255, 255, 0.06);
+          background: var(--bg-secondary);
           border: 1px solid rgba(255, 255, 255, 0.12);
-          color: #e2e8f0;
+          color: var(--text-secondary);
           font-weight: 600;
           font-size: 0.86rem;
           cursor: pointer;
@@ -5672,7 +5677,7 @@ export function AttendanceClient() {
           padding: 0.65rem 1.15rem;
           border-radius: 0.65rem;
           background: #ef4444;
-          color: #ffffff;
+          color: var(--text-primary);
           font-weight: 700;
           font-size: 0.86rem;
           border: none;
@@ -5698,8 +5703,8 @@ export function AttendanceClient() {
           justify-content: space-between;
           padding: 0.75rem 0.85rem;
           border-radius: 0.75rem;
-          background: rgba(255, 255, 255, 0.035);
-          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-light);
           cursor: pointer;
           transition: all 0.18s ease;
           text-align: left;
@@ -5707,7 +5712,7 @@ export function AttendanceClient() {
 
         .subject-picker-item:hover,
         .subject-picker-item.active {
-          background: rgba(56, 189, 248, 0.12);
+          background: var(--color-accent-bg);
           border-color: rgba(56, 189, 248, 0.35);
         }
 
@@ -5721,11 +5726,11 @@ export function AttendanceClient() {
           width: 34px;
           height: 34px;
           border-radius: 0.5rem;
-          background: rgba(255, 255, 255, 0.06);
+          background: var(--bg-secondary);
           display: flex;
           align-items: center;
           justify-content: center;
-          color: #38bdf8;
+          color: var(--color-accent);
         }
 
         .picker-text {
@@ -5736,12 +5741,12 @@ export function AttendanceClient() {
         .picker-name {
           font-size: 0.9rem;
           font-weight: 700;
-          color: #ffffff;
+          color: var(--text-primary);
         }
 
         .picker-code {
           font-size: 0.74rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
         }
 
         .picker-right {
@@ -5776,13 +5781,13 @@ export function AttendanceClient() {
         .target-large-display {
           font-size: 2.5rem;
           font-weight: 800;
-          color: #38bdf8;
+          color: var(--color-accent);
         }
 
         .target-slider {
           width: 100%;
           cursor: pointer;
-          accent-color: #38bdf8;
+          accent-color: var(--color-accent);
         }
 
         .slider-ticks {
@@ -5790,7 +5795,7 @@ export function AttendanceClient() {
           justify-content: space-between;
           width: 100%;
           font-size: 0.72rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
         }
 
         /* GUIDE CONTENT */
@@ -5807,7 +5812,7 @@ export function AttendanceClient() {
           gap: 0.25rem;
           padding: 0.65rem 0.85rem;
           border-radius: 0.75rem;
-          background: rgba(255, 255, 255, 0.035);
+          background: var(--bg-secondary);
           border: 1px solid rgba(255, 255, 255, 0.07);
         }
 
@@ -5832,12 +5837,12 @@ export function AttendanceClient() {
 
         .guide-badge.gray {
           background: rgba(100, 116, 139, 0.15);
-          color: #94a3b8;
+          color: var(--text-secondary);
         }
 
         .guide-badge.blue {
-          background: rgba(56, 189, 248, 0.15);
-          color: #38bdf8;
+          background: var(--color-accent-bg);
+          color: var(--color-accent);
         }
 
         .guide-badge.amber {
@@ -5864,9 +5869,9 @@ export function AttendanceClient() {
           gap: 0.75rem;
           padding: 0.75rem 0.85rem;
           border-radius: 0.75rem;
-          background: rgba(255, 255, 255, 0.035);
+          background: var(--bg-secondary);
           border: 1px solid rgba(255, 255, 255, 0.07);
-          color: #e2e8f0;
+          color: var(--text-secondary);
           font-size: 0.88rem;
           font-weight: 600;
           cursor: pointer;
@@ -5876,8 +5881,8 @@ export function AttendanceClient() {
         }
 
         .option-menu-item:hover {
-          background: rgba(255, 255, 255, 0.08);
-          color: #ffffff;
+          background: var(--bg-card-hover);
+          color: var(--text-primary);
         }
 
         /* MONTH DETAIL MODAL */
@@ -5891,20 +5896,20 @@ export function AttendanceClient() {
         .m-detail-chip {
           padding: 0.75rem;
           border-radius: 0.65rem;
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.08);
+          background: var(--bg-secondary);
+          border: 1px solid var(--border-light);
           display: flex;
           flex-direction: column;
         }
 
         .m-detail-chip span {
           font-size: 0.74rem;
-          color: #94a3b8;
+          color: var(--text-secondary);
         }
 
         .m-detail-chip strong {
           font-size: 1.2rem;
-          color: #ffffff;
+          color: var(--text-primary);
           margin-top: 0.15rem;
         }
 

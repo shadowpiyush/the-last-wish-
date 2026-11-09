@@ -34,79 +34,84 @@ export async function fetchStudentRecords(
   const records: RawAttendanceRecord[] = []
 
   // 1. Attempt primary query on dedicated `attendance_records` table
-  try {
-    let query = db
-      .from('attendance_records')
-      .select('id, subject_id, date, status, class_number, notes, created_at')
-      .eq('user_id', userId)
+    let queryError = false
+    try {
+      let query = db
+        .from('attendance_records')
+        .select('id, subject_id, date, status, class_number, notes, created_at')
+        .eq('user_id', userId)
 
-    if (options?.subjectId) query = query.eq('subject_id', options.subjectId)
-    if (options?.status) query = query.eq('status', options.status)
-    if (options?.startDate) query = query.gte('date', options.startDate)
-    if (options?.endDate) query = query.lte('date', options.endDate)
+      if (options?.subjectId) query = query.eq('subject_id', options.subjectId)
+      if (options?.status) query = query.eq('status', options.status)
+      if (options?.startDate) query = query.gte('date', options.startDate)
+      if (options?.endDate) query = query.lte('date', options.endDate)
 
-    const { data, error } = await query
-      .order('date', { ascending: false })
-      .order('class_number', { ascending: false })
+      const { data, error } = await query
+        .order('date', { ascending: false })
+        .order('class_number', { ascending: false })
 
-    if (!error && data) {
-      for (const row of data) {
-        records.push({
-          id: row.id,
-          subject_id: row.subject_id,
-          date: row.date,
-          status: row.status as AttendanceRecordStatus,
-          class_number: row.class_number || 1,
-          notes: row.notes || null,
-          created_at: row.created_at,
-        })
-      }
-    }
-  } catch {
-    // Primary query table not ready or not migrated
-  }
-
-  // 2. Query fallback storage in `activity_events` (if table was missing or had fewer records)
-  try {
-    let fallbackQuery = db
-      .from('activity_events')
-      .select('id, user_id, subject_id, status, metadata, occurred_at')
-      .eq('user_id', userId)
-      .eq('event_type', 'attendance_record')
-
-    if (options?.subjectId) fallbackQuery = fallbackQuery.eq('subject_id', options.subjectId)
-    if (options?.status) fallbackQuery = fallbackQuery.eq('status', options.status)
-
-    const { data: fallbackData } = await fallbackQuery.order('occurred_at', { ascending: false })
-
-    if (fallbackData) {
-      const existingKeys = new Set(
-        records.map((r) => `${r.subject_id}_${r.date}_${r.class_number}`)
-      )
-
-      for (const row of fallbackData) {
-        const meta = (row.metadata || {}) as Record<string, unknown>
-        const date = normalizeAttendanceDate(meta.date || row.occurred_at) || ''
-        const classNumber = typeof meta.class_number === 'number' ? meta.class_number : 1
-        const key = `${row.subject_id}_${date}_${classNumber}`
-
-        if (!existingKeys.has(key) && date) {
-          existingKeys.add(key)
+      if (!error && data) {
+        for (const row of data) {
           records.push({
             id: row.id,
-            subject_id: row.subject_id || (meta.subject_id as string) || '',
-            date,
-            status: (row.status || meta.status || 'present') as AttendanceRecordStatus,
-            class_number: classNumber,
-            notes: (meta.notes as string) || null,
-            created_at: row.occurred_at,
+            subject_id: row.subject_id,
+            date: row.date,
+            status: row.status as AttendanceRecordStatus,
+            class_number: row.class_number || 1,
+            notes: row.notes || null,
+            created_at: row.created_at,
           })
         }
+      } else if (error) {
+        queryError = true
+      }
+    } catch {
+      queryError = true
+    }
+
+    // 2. Query fallback storage in `activity_events` ONLY if dedicated table query failed
+    if (queryError) {
+      try {
+        let fallbackQuery = db
+          .from('activity_events')
+          .select('id, user_id, subject_id, status, metadata, occurred_at')
+          .eq('user_id', userId)
+          .eq('event_type', 'attendance_record')
+
+        if (options?.subjectId) fallbackQuery = fallbackQuery.eq('subject_id', options.subjectId)
+        if (options?.status) fallbackQuery = fallbackQuery.eq('status', options.status)
+
+        const { data: fallbackData } = await fallbackQuery.order('occurred_at', { ascending: false })
+
+        if (fallbackData) {
+          const existingKeys = new Set(
+            records.map((r) => `${r.subject_id}_${r.date}_${r.class_number}`)
+          )
+
+          for (const row of fallbackData) {
+            const meta = (row.metadata || {}) as Record<string, unknown>
+            const date = normalizeAttendanceDate(meta.date || row.occurred_at) || ''
+            const classNumber = typeof meta.class_number === 'number' ? meta.class_number : 1
+            const key = `${row.subject_id}_${date}_${classNumber}`
+
+            if (!existingKeys.has(key) && date) {
+              existingKeys.add(key)
+              records.push({
+                id: row.id,
+                subject_id: row.subject_id || (meta.subject_id as string) || '',
+                date,
+                status: (row.status || meta.status || 'present') as AttendanceRecordStatus,
+                class_number: classNumber,
+                notes: (meta.notes as string) || null,
+                created_at: row.occurred_at,
+              })
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Fallback attendance read error:', err)
       }
     }
-  } catch (err) {
-    console.error('Fallback attendance read error:', err)
-  }
 
   // Sort unified records by date DESC, class_number DESC
   records.sort((a, b) => {

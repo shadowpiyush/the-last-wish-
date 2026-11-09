@@ -309,8 +309,8 @@ export function CurriculumClient({
                         fontSize: '0.625rem',
                         padding: '1px 5px',
                         borderRadius: 'var(--radius-full)',
-                        background: isSelected ? 'rgba(255, 255, 255, 0.25)' : 'rgba(79, 70, 229, 0.15)',
-                        color: isSelected ? '#ffffff' : '#4f46e5',
+                        background: isSelected ? 'rgba(255, 255, 255, 0.25)' : 'rgba(118, 80, 245, 0.15)',
+                        color: isSelected ? '#ffffff' : 'var(--color-accent)',
                         fontWeight: 700,
                       }}
                     >
@@ -341,8 +341,8 @@ export function CurriculumClient({
           style={{
             padding: '1.25rem 1.5rem',
             marginBottom: '1.5rem',
-            borderLeft: '4px solid #4f46e5',
-            background: 'linear-gradient(135deg, rgba(79, 70, 229, 0.06) 0%, rgba(155, 28, 49, 0.04) 100%)',
+            borderLeft: '4px solid var(--color-accent)',
+            background: 'linear-gradient(135deg, rgba(118, 80, 245, 0.08) 0%, rgba(71, 139, 250, 0.06) 100%)',
           }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>

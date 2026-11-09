@@ -4,6 +4,17 @@ import { getR2Client, getR2Config } from '@/lib/r2/client'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
+interface CachedSignedUrl {
+  url: string
+  streamUrl: string
+  directUrl?: string
+  provider?: string
+  expiresAt: number
+}
+
+// In-memory cache for presigned viewer URLs to avoid expensive repeated signing calls
+const signedUrlCache = new Map<string, CachedSignedUrl>()
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url)
@@ -15,6 +26,20 @@ export async function GET(request: Request) {
     }
 
     const cleanPath = decodeURIComponent(path).replace(/^\/+/, '')
+    const cacheKey = `${bucket}:${cleanPath}`
+
+    // Check warm signed URL cache (reusable for up to 50 minutes of the 60-minute window)
+    const cached = signedUrlCache.get(cacheKey)
+    if (cached && Date.now() < cached.expiresAt) {
+      return NextResponse.json({
+        success: true,
+        url: cached.url,
+        streamUrl: cached.streamUrl,
+        directUrl: cached.directUrl,
+        provider: cached.provider,
+        cached: true,
+      })
+    }
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -48,6 +73,16 @@ export async function GET(request: Request) {
             ResponseContentType: 'application/pdf',
           })
           const r2Url = await getSignedUrl(r2Client, command, { expiresIn: 3600 })
+          
+          const result = {
+            url: streamUrl,
+            streamUrl,
+            directUrl: r2Url,
+            provider: 'r2',
+            expiresAt: Date.now() + 50 * 60 * 1000,
+          }
+          signedUrlCache.set(cacheKey, result)
+
           return NextResponse.json({
             success: true,
             url: streamUrl,
@@ -70,18 +105,28 @@ export async function GET(request: Request) {
         download: false,
       })
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 })
+    if (error || !data?.signedUrl) {
+      return NextResponse.json({ error: error?.message || 'File not found or inaccessible.' }, { status: 404 })
     }
+
+    const result = {
+      url: streamUrl,
+      streamUrl,
+      directUrl: data.signedUrl,
+      provider: 'supabase',
+      expiresAt: Date.now() + 100 * 60 * 1000,
+    }
+    signedUrlCache.set(cacheKey, result)
 
     return NextResponse.json({
       success: true,
       url: streamUrl,
       streamUrl,
       directUrl: data.signedUrl,
+      provider: 'supabase',
     })
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Failed to generate view URL'
-    return NextResponse.json({ error: msg }, { status: 500 })
+    const message = err instanceof Error ? err.message : 'Internal Server Error'
+    return NextResponse.json({ error: message }, { status: 500 })
   }
 }

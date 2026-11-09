@@ -19,8 +19,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       const saved = localStorage.getItem('harcoutian_theme')
       if (saved) {
         setTheme(saved)
-      } else if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) {
-        setTheme('dark')
+      } else {
+        setTheme('light')
       }
     })
     return () => window.cancelAnimationFrame(frame)

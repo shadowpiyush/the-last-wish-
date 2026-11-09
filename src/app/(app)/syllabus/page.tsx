@@ -1,8 +1,8 @@
 export const dynamic = 'force-dynamic'
 
 import type { Metadata } from 'next'
-import { createClient } from '@/lib/supabase/server'
 import { SyllabusClient } from '@/components/syllabus/SyllabusClient'
+import { getCachedPrograms, getCachedBranches } from '@/lib/academic/cache'
 
 export const metadata: Metadata = {
   title: 'Academic Syllabus',
@@ -16,17 +16,10 @@ export const metadata: Metadata = {
 }
 
 export default async function SyllabusPage() {
-  const supabase = await createClient()
-
-  // Both lookup tables are small and public; fetch them together so the first
-  // render doesn't wait through a programs-then-branches waterfall.
-  const [{ data: programs }, { data: branches }] = await Promise.all([
-    supabase.from('programs')
-      .select('id, name, short_code, duration_years, total_semesters')
-      .order('name'),
-    supabase.from('branches')
-      .select('id, program_id, name, code')
-      .order('name'),
+  // Fetch academic metadata using high-performance server-side cache
+  const [programs, branches] = await Promise.all([
+    getCachedPrograms(),
+    getCachedBranches(),
   ])
 
   const allPrograms = programs || []
@@ -59,18 +52,17 @@ export default async function SyllabusPage() {
             color: 'var(--text-primary)',
           }}
         >
-          Academic Course Syllabus
+          Curriculum & Syllabus Directory
         </h1>
         <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>
-          Hierarchical course breakdown: Program → Branch → Year → Semester → Subject → Units →
-          Topics
+          Autonomous syllabus roadmaps, unit-wise topic breakdowns, credits, and reference materials.
         </p>
       </div>
 
-      {/* Interactive island (client component) */}
+      {/* Interactive client component */}
       <SyllabusClient
         initialPrograms={allPrograms}
-        initialBranches={branchList}
+        initialBranches={branches ?? []}
         defaultProgram={defaultProgram}
         defaultBranch={defaultBranch}
         defaultSemester={1}

@@ -28,31 +28,38 @@ export function AppShell({ children }: AppShellProps) {
   }, [])
 
   return (
-    <div className="app-layout">
-      {/* Sidebar Navigation */}
-      <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+    <div className="ambient-background">
+      {/* Floating Ambient Glow Orbs for Apple-inspired depth */}
+      <div className="ambient-orb orb-1" aria-hidden="true" />
+      <div className="ambient-orb orb-2" aria-hidden="true" />
+      <div className="ambient-orb orb-3" aria-hidden="true" />
+      <div className="ambient-orb orb-4" aria-hidden="true" />
 
-      <div className="main-content">
-        {/* Floating Apple-Style Translucent Header */}
-        <Header
-          onOpenSearch={() => setSearchOpen(true)}
-          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-          onOpenCompliance={() => setComplianceOpen(true)}
-        />
+      {/* Floating Glass Application Container */}
+      <div className="app-frame">
+        <div className="app-layout">
+          {/* Sidebar Navigation */}
+          <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-        {/* Dynamic Route View */}
-        <main className="page-wrapper">{children}</main>
+          <div className="main-content">
+            {/* Floating Apple-Style Translucent Header */}
+            <Header
+              onOpenSearch={() => setSearchOpen(true)}
+              onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+              onOpenCompliance={() => setComplianceOpen(true)}
+            />
 
-        {/* Footer */}
-        <Footer />
+            {/* Dynamic Route View */}
+            <main className="page-wrapper">{children}</main>
+
+            {/* Footer */}
+            <Footer />
+          </div>
+
+          {/* Mobile Bottom Navigation */}
+          <MobileNav />
+        </div>
       </div>
-
-      {/* Mobile Bottom Navigation */}
-      <MobileNav />
-
-      {/* TODO: Global Cmd+K Search Modal */}
-      {/* TODO: Compliance Modal */}
-      {/* TODO: Ebook Reader Modal */}
     </div>
   )
 }

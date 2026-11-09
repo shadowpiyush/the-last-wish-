@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic'
 import type { Metadata } from 'next'
 import { createClient } from '@/lib/supabase/server'
 import { LibraryClient, type BookItem } from './LibraryClient'
+import { getCachedPrograms, getCachedBranches } from '@/lib/academic/cache'
 
 export const metadata: Metadata = {
   title: 'Digital Library',
@@ -29,11 +30,11 @@ export default async function LibraryPage() {
           )
         `)
         .order('title')
-        .limit(150)
+        .limit(100)
 
-      if (!error) return (data || []) as unknown as BookItem[]
+      if (!error && data) return data as unknown as BookItem[]
     } catch {
-      // Use the schema-compatible query below if the joined lookup fails.
+      // Use fallback query below if complex joined lookup fails
     }
 
     try {
@@ -46,18 +47,17 @@ export default async function LibraryPage() {
           subjects (id, subject_code, subject_name)
         `)
         .order('title')
-        .limit(150)
+        .limit(100)
       return (fallbackData || []) as unknown as BookItem[]
     } catch {
       return []
     }
   }
 
-  // All independent initial reads share a round trip; the old sequence loaded
-  // books only after the academic filters had finished.
-  const [{ data: programs }, { data: branches }, books] = await Promise.all([
-    supabase.from('programs').select('id, name, short_code').order('name'),
-    supabase.from('branches').select('id, program_id, name, code').order('name'),
+  // Load cached programs and branches in parallel with books query
+  const [programs, branches, books] = await Promise.all([
+    getCachedPrograms(),
+    getCachedBranches(),
     loadBooks(),
   ])
 
