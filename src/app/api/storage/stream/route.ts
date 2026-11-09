@@ -7,13 +7,13 @@ export const dynamic = 'force-dynamic'
 
 /**
  * High-performance streaming proxy for Cloudflare R2 and Supabase storage.
- * Supports HTTP 206 Range requests (byte-range streaming) so browsers can
- * instantly load large 150MB+ PDFs in milliseconds without downloading the whole file.
+ * Supports HTTP 206 Range requests (byte-range streaming) so browsers and PDF.js
+ * can instantly load large PDFs in milliseconds without downloading the whole file.
  */
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url)
-    const bucket = searchParams.get('bucket') || 'ebooks'
+    const bucket = searchParams.get('bucket') || 'notes'
     const rawPath = searchParams.get('path')
 
     if (!rawPath) {
@@ -28,61 +28,79 @@ export async function GET(request: Request) {
     const filename = cleanPath.split('/').pop() || 'document.pdf'
     const rangeHeader = request.headers.get('range')
 
-    // 1. Try Cloudflare R2 first for eBooks or R2 bucket
-    const isR2Candidate = bucket === 'r2' || bucket === 'ebooks' || cleanPath.startsWith('ebooks/')
+    // 1. Try Cloudflare R2 first for ultra-fast byte-range delivery
     const { isConfigured, bucketName } = getR2Config()
-
-    if (isR2Candidate && isConfigured) {
+    if (isConfigured) {
       try {
         const r2Client = getR2Client()
-        const getParams: { Bucket: string; Key: string; Range?: string } = {
-          Bucket: bucketName,
-          Key: cleanPath,
+        const candidateKeys = Array.from(
+          new Set([
+            cleanPath,
+            `${bucket}/${cleanPath}`,
+            cleanPath.startsWith(`${bucket}/`) ? cleanPath.slice(bucket.length + 1) : null,
+          ].filter(Boolean) as string[])
+        )
+
+        let foundKey: string | null = null
+        for (const testKey of candidateKeys) {
+          try {
+            await r2Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: testKey }))
+            foundKey = testKey
+            break
+          } catch {
+            // Check next candidate key
+          }
         }
 
-        if (rangeHeader) {
-          getParams.Range = rangeHeader
-        }
-
-        const res = await r2Client.send(new GetObjectCommand(getParams))
-
-        if (res.Body) {
-          const isPartial = Boolean(rangeHeader && res.ContentRange)
-          const status = isPartial ? 206 : 200
-
-          const headers: Record<string, string> = {
-            'Content-Type': res.ContentType || 'application/pdf',
-            'Accept-Ranges': 'bytes',
-            'Content-Disposition': `inline; filename="${filename}"`,
-            'Cache-Control': 'public, max-age=86400, stale-while-revalidate=3600',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Headers': 'Range, Accept, Content-Type',
-            'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
+        if (foundKey) {
+          const getParams: { Bucket: string; Key: string; Range?: string } = {
+            Bucket: bucketName,
+            Key: foundKey,
           }
 
-          if (res.ContentLength !== undefined) {
-            headers['Content-Length'] = String(res.ContentLength)
-          }
-          if (res.ContentRange) {
-            headers['Content-Range'] = res.ContentRange
-          }
-          if (res.ETag) {
-            headers['ETag'] = res.ETag
+          if (rangeHeader) {
+            getParams.Range = rangeHeader
           }
 
-          const webStream = res.Body.transformToWebStream()
-          return new Response(webStream, {
-            status,
-            headers,
-          })
+          const res = await r2Client.send(new GetObjectCommand(getParams))
+
+          if (res.Body) {
+            const isPartial = Boolean(rangeHeader && res.ContentRange)
+            const status = isPartial ? 206 : 200
+
+            const headers: Record<string, string> = {
+              'Content-Type': res.ContentType || 'application/pdf',
+              'Accept-Ranges': 'bytes',
+              'Content-Disposition': `inline; filename="${filename}"`,
+              'Cache-Control': 'public, max-age=86400, stale-while-revalidate=86400',
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Allow-Headers': 'Range, Accept, Content-Type, If-Range, If-None-Match',
+              'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, ETag',
+            }
+
+            if (res.ContentLength !== undefined) {
+              headers['Content-Length'] = String(res.ContentLength)
+            }
+            if (res.ContentRange) {
+              headers['Content-Range'] = res.ContentRange
+            }
+            if (res.ETag) {
+              headers['ETag'] = res.ETag
+            }
+
+            const webStream = res.Body.transformToWebStream()
+            return new Response(webStream, {
+              status,
+              headers,
+            })
+          }
         }
       } catch (r2Err: unknown) {
-        // If file not in R2, fall through to Supabase storage
         console.warn(`R2 stream check for "${cleanPath}" fell back to Supabase:`, (r2Err as Error)?.message)
       }
     }
 
-    // 2. Fall back to Supabase Storage
+    // 2. Fall back to Supabase Storage if file is not in R2
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
@@ -116,10 +134,10 @@ export async function GET(request: Request) {
       'Content-Type': supaRes.headers.get('content-type') || 'application/pdf',
       'Accept-Ranges': 'bytes',
       'Content-Disposition': `inline; filename="${filename}"`,
-      'Cache-Control': 'public, max-age=86400, stale-while-revalidate=3600',
+      'Cache-Control': 'public, max-age=86400, stale-while-revalidate=86400',
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Headers': 'Range, Accept, Content-Type',
-      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
+      'Access-Control-Allow-Headers': 'Range, Accept, Content-Type, If-Range, If-None-Match',
+      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, ETag',
     }
 
     const cl = supaRes.headers.get('content-length')
@@ -143,7 +161,7 @@ export async function GET(request: Request) {
 export async function HEAD(request: Request) {
   try {
     const { searchParams } = new URL(request.url)
-    const bucket = searchParams.get('bucket') || 'ebooks'
+    const bucket = searchParams.get('bucket') || 'notes'
     const rawPath = searchParams.get('path')
 
     if (!rawPath) {
@@ -151,34 +169,48 @@ export async function HEAD(request: Request) {
     }
 
     const cleanPath = decodeURIComponent(rawPath).replace(/^\/+/, '')
-    const isR2Candidate = bucket === 'r2' || bucket === 'ebooks' || cleanPath.startsWith('ebooks/')
     const { isConfigured, bucketName } = getR2Config()
 
-    if (isR2Candidate && isConfigured) {
+    if (isConfigured) {
       try {
         const r2Client = getR2Client()
-        const head = await r2Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: cleanPath }))
+        const candidateKeys = Array.from(
+          new Set([
+            cleanPath,
+            `${bucket}/${cleanPath}`,
+            cleanPath.startsWith(`${bucket}/`) ? cleanPath.slice(bucket.length + 1) : null,
+          ].filter(Boolean) as string[])
+        )
 
-        const headers: Record<string, string> = {
-          'Content-Type': head.ContentType || 'application/pdf',
-          'Accept-Ranges': 'bytes',
-          'Content-Disposition': 'inline',
-          'Access-Control-Allow-Origin': '*',
+        for (const testKey of candidateKeys) {
+          try {
+            const head = await r2Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: testKey }))
+            const headers: Record<string, string> = {
+              'Content-Type': head.ContentType || 'application/pdf',
+              'Accept-Ranges': 'bytes',
+              'Access-Control-Allow-Origin': '*',
+              'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, ETag',
+              'Cache-Control': 'public, max-age=86400',
+            }
+            if (head.ContentLength !== undefined) {
+              headers['Content-Length'] = String(head.ContentLength)
+            }
+            if (head.ETag) {
+              headers['ETag'] = head.ETag
+            }
+            return new Response(null, { status: 200, headers })
+          } catch {}
         }
-        if (head.ContentLength !== undefined) {
-          headers['Content-Length'] = String(head.ContentLength)
-        }
-        if (head.ETag) {
-          headers['ETag'] = head.ETag
-        }
-
-        return new Response(null, { status: 200, headers })
-      } catch {
-        // Fall back to 404 or Supabase
-      }
+      } catch {}
     }
 
-    return new Response(null, { status: 200, headers: { 'Accept-Ranges': 'bytes' } })
+    return new Response(null, {
+      status: 200,
+      headers: {
+        'Accept-Ranges': 'bytes',
+        'Content-Type': 'application/pdf',
+      },
+    })
   } catch {
     return new Response(null, { status: 500 })
   }

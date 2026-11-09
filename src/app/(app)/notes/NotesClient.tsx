@@ -26,6 +26,7 @@ import {
   AlertCircle,
   ExternalLink,
 } from 'lucide-react'
+import { FastPdfViewer } from '@/components/pdf/FastPdfViewer'
 
 export interface NoteSubject {
   id: string
@@ -332,8 +333,8 @@ export function NotesClient({
         `/api/storage/view-url?bucket=notes&path=${encodeURIComponent(note.file_path)}`
       )
       const data = await res.json()
-      if (data.url) {
-        setActiveReadingNote({ note, url: data.url })
+      if (data.directUrl || data.url) {
+        setActiveReadingNote({ note, url: data.directUrl || data.url })
       } else {
         alert(data.error || 'Failed to open note')
       }
@@ -1820,125 +1821,14 @@ export function NotesClient({
         </>
       )}
 
-      {/* ──────────────── 6. SECURE READ-ONLY PDF READER MODAL ──────────────── */}
+      {/* ──────────────── 6. ULTRA-FAST PROGRESSIVE PDF READER MODAL ──────────────── */}
       {activeReadingNote && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          style={{
-            position: 'fixed',
-            inset: 0,
-            zIndex: 9999,
-            backgroundColor: 'rgba(23, 32, 68, 0.75)',
-            backdropFilter: 'blur(10px)',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '1rem',
-          }}
-          onContextMenu={(e) => e.preventDefault()}
-        >
-          <div
-            className="glass-card"
-            style={{
-              width: '100%',
-              maxWidth: 1100,
-              height: '92vh',
-              display: 'flex',
-              flexDirection: 'column',
-              borderRadius: 'var(--radius-lg)',
-              overflow: 'hidden',
-              boxShadow: '0 25px 60px rgba(0, 0, 0, 0.35)',
-              border: '1px solid rgba(255, 255, 255, 0.9)',
-              background: '#ffffff',
-            }}
-          >
-            {/* Modal Header */}
-            <div
-              style={{
-                padding: '0.85rem 1.25rem',
-                borderBottom: '1px solid var(--border-light)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                backgroundColor: 'rgba(244, 244, 255, 0.9)',
-                backdropFilter: 'blur(8px)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                <FileText size={18} color="var(--color-accent)" style={{ flexShrink: 0 }} />
-                <div style={{ minWidth: 0 }}>
-                  <h3
-                    style={{
-                      fontSize: '0.9375rem',
-                      fontWeight: 800,
-                      margin: 0,
-                      color: 'var(--text-primary)',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {activeReadingNote.note.title}
-                  </h3>
-                  <div
-                    style={{
-                      fontSize: '0.75rem',
-                      color: 'var(--text-secondary)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
-                  >
-                    <span>{formatFileSize(activeReadingNote.note.file_size)}</span>
-                    <span>·</span>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: '#10b981', fontWeight: 600 }}>
-                      <Lock size={11} /> Read-Only Academic Access
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span className="badge badge-yellow" style={{ fontSize: '0.6875rem', fontWeight: 600 }}>
-                  Protected Document
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setActiveReadingNote(null)}
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    padding: 6,
-                    borderRadius: 'var(--radius-sm)',
-                    cursor: 'pointer',
-                    color: 'var(--text-secondary)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                  title="Close PDF reader"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-            </div>
-
-            {/* Embedded PDF iframe (Anti-Download configured) */}
-            <div style={{ flex: 1, position: 'relative', backgroundColor: '#e2e8f0' }}>
-              <iframe
-                src={`${activeReadingNote.url}#toolbar=0&navpanes=0&scrollbar=1`}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  border: 'none',
-                }}
-                title={activeReadingNote.note.title}
-              />
-            </div>
-          </div>
-        </div>
+        <FastPdfViewer
+          url={activeReadingNote.url}
+          title={activeReadingNote.note.title}
+          fileSize={activeReadingNote.note.file_size}
+          onClose={() => setActiveReadingNote(null)}
+        />
       )}
     </div>
   )

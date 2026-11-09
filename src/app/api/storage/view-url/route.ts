@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getR2Client, getR2Config } from '@/lib/r2/client'
-import { GetObjectCommand } from '@aws-sdk/client-s3'
+import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 interface CachedSignedUrl {
@@ -44,14 +44,6 @@ export async function GET(request: Request) {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 
-    if (!supabaseUrl || !serviceKey) {
-      return NextResponse.json({ error: 'Supabase credentials not configured' }, { status: 500 })
-    }
-
-    const supabaseAdmin = createClient(supabaseUrl, serviceKey, {
-      auth: { autoRefreshToken: false, persistSession: false },
-    })
-
     // If bucket is public (like covers), return public URL directly
     if (bucket === 'covers') {
       const publicUrl = `${supabaseUrl}/storage/v1/object/public/covers/${cleanPath}`
@@ -60,22 +52,42 @@ export async function GET(request: Request) {
 
     const streamUrl = `/api/storage/stream?bucket=${encodeURIComponent(bucket)}&path=${encodeURIComponent(cleanPath)}`
 
-    // If bucket is R2 or an eBook file stored in Cloudflare R2
-    if (bucket === 'r2' || bucket === 'ebooks' || cleanPath.startsWith('ebooks/')) {
-      const { isConfigured, bucketName } = getR2Config()
-      if (isConfigured) {
-        try {
-          const r2Client = getR2Client()
+    // 1. Check Cloudflare R2 first for ultra-fast direct byte-range access
+    const { isConfigured, bucketName } = getR2Config()
+    if (isConfigured) {
+      try {
+        const r2Client = getR2Client()
+        // Try candidate keys in R2 (with prefix, without prefix, or as cleanPath)
+        const candidateKeys = Array.from(
+          new Set([
+            cleanPath,
+            `${bucket}/${cleanPath}`,
+            cleanPath.startsWith(`${bucket}/`) ? cleanPath.slice(bucket.length + 1) : null,
+          ].filter(Boolean) as string[])
+        )
+
+        let foundKey: string | null = null
+        for (const testKey of candidateKeys) {
+          try {
+            await r2Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: testKey }))
+            foundKey = testKey
+            break
+          } catch {
+            // Check next key
+          }
+        }
+
+        if (foundKey) {
           const command = new GetObjectCommand({
             Bucket: bucketName,
-            Key: cleanPath,
+            Key: foundKey,
             ResponseContentDisposition: 'inline',
             ResponseContentType: 'application/pdf',
           })
           const r2Url = await getSignedUrl(r2Client, command, { expiresIn: 3600 })
-          
-          const result = {
-            url: streamUrl,
+
+          const result: CachedSignedUrl = {
+            url: r2Url,
             streamUrl,
             directUrl: r2Url,
             provider: 'r2',
@@ -85,19 +97,26 @@ export async function GET(request: Request) {
 
           return NextResponse.json({
             success: true,
-            url: streamUrl,
+            url: r2Url,
             streamUrl,
             directUrl: r2Url,
             provider: 'r2',
           })
-        } catch (r2Err: unknown) {
-          const message = r2Err instanceof Error ? r2Err.message : 'error'
-          console.warn(`R2 signing for "${cleanPath}" warning (${message}). Falling back to Supabase storage.`)
         }
+      } catch (r2Err: unknown) {
+        console.warn(`R2 signing check for "${cleanPath}" warning:`, r2Err)
       }
     }
 
-    // Direct downloading is disabled platform-wide. Documents are strictly readable online.
+    // 2. Fall back to Supabase Storage if file is not in R2
+    if (!supabaseUrl || !serviceKey) {
+      return NextResponse.json({ error: 'Supabase credentials not configured' }, { status: 500 })
+    }
+
+    const supabaseAdmin = createClient(supabaseUrl, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
+
     // Serving strictly with download: false ensures Content-Disposition: inline for reading only.
     const { data, error } = await supabaseAdmin.storage
       .from(bucket)
@@ -109,7 +128,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: error?.message || 'File not found or inaccessible.' }, { status: 404 })
     }
 
-    const result = {
+    const result: CachedSignedUrl = {
       url: streamUrl,
       streamUrl,
       directUrl: data.signedUrl,

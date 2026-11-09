@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import { useAuth } from '@/components/providers/AuthProvider'
+import { FastPdfViewer } from '@/components/pdf/FastPdfViewer'
 
 interface AcademicMappingItem {
   id: string
@@ -177,9 +178,8 @@ export function LibraryClient({ initialBooks, programs = [], branches = [] }: Li
     try {
       const res = await fetch(`/api/storage/view-url?bucket=ebooks&path=${encodeURIComponent(book.ebook_file_path)}`)
       const data = await res.json()
-      if (data.url) {
-        setReaderIframeLoading(true)
-        setActiveReadingBook({ book, url: data.url })
+      if (data.directUrl || data.url) {
+        setActiveReadingBook({ book, url: data.directUrl || data.url })
       } else {
         alert(data.error || 'Failed to open eBook')
       }
@@ -555,127 +555,13 @@ export function LibraryClient({ initialBooks, programs = [], branches = [] }: Li
         </div>
       )}
 
-      {/* Online eBook Reader Modal (Strict Read-Only Mode) */}
+      {/* ──────────────── ULTRA-FAST PROGRESSIVE PDF READER MODAL ──────────────── */}
       {activeReadingBook && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.88)',
-            backdropFilter: 'blur(8px)',
-            zIndex: 9999,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '1rem',
-          }}
-          onClick={() => setActiveReadingBook(null)}
-          onContextMenu={(e) => e.preventDefault()}
-        >
-          <div
-            style={{
-              width: '100%',
-              maxWidth: '1100px',
-              height: '92vh',
-              background: '#0d1117',
-              border: '1px solid var(--border-color)',
-              borderRadius: '16px',
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden',
-              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7)',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Top Toolbar */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '0.875rem 1.25rem',
-                borderBottom: '1px solid var(--border-color)',
-                background: 'rgba(255, 255, 255, 0.03)',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                <BookOpen size={18} color="#6366f1" />
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: '0.875rem', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {activeReadingBook.book.title}
-                  </div>
-                  <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>
-                    by {activeReadingBook.book.author} &bull; Read-Only Digital Reader (Downloading Disabled)
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <a
-                  href={activeReadingBook.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn btn-secondary"
-                  style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                  title="Open in new full screen tab"
-                >
-                  <Maximize2 size={13} /> Full Screen
-                </a>
-                <span
-                  className="badge badge-neutral"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.6875rem', padding: '0.25rem 0.6rem' }}
-                >
-                  <Lock size={12} color="#6366f1" /> Read Only
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setActiveReadingBook(null)}
-                  className="btn btn-secondary"
-                  style={{ padding: '0.35rem 0.6rem', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                >
-                  <X size={14} /> Close
-                </button>
-              </div>
-            </div>
-
-            {/* Embedded PDF iframe with toolbar disabled */}
-            <div style={{ flex: 1, position: 'relative', background: '#161b22' }}>
-              {readerIframeLoading && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '0.75rem',
-                    background: '#0d1117',
-                    zIndex: 2,
-                  }}
-                >
-                  <Loader2 size={32} className="animate-spin" style={{ color: '#10b981' }} />
-                  <div style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                    Streaming eBook via Cloudflare R2...
-                  </div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-                    High-speed byte-range partial stream active
-                  </div>
-                </div>
-              )}
-              <iframe
-                src={`${activeReadingBook.url}#toolbar=0&navpanes=0&scrollbar=1`}
-                onLoad={() => setReaderIframeLoading(false)}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  border: 'none',
-                }}
-                title={activeReadingBook.book.title}
-              />
-            </div>
-          </div>
-        </div>
+        <FastPdfViewer
+          url={activeReadingBook.url}
+          title={activeReadingBook.book.title}
+          onClose={() => setActiveReadingBook(null)}
+        />
       )}
     </div>
   )
