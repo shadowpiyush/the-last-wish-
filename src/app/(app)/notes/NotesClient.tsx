@@ -1,7 +1,10 @@
 'use client'
 
-import { useState, useEffect, useCallback, useTransition } from 'react'
+import { useState, useEffect, useCallback, useMemo, useTransition } from 'react'
+import Link from 'next/link'
 import {
+  Folder,
+  FolderOpen,
   FileText,
   Search,
   Eye,
@@ -12,12 +15,16 @@ import {
   Lock,
   Maximize2,
   GraduationCap,
-  Globe,
   RotateCcw,
   Sparkles,
-  Layers,
   ChevronRight,
+  ArrowLeft,
+  CheckCircle2,
+  Layers,
   BookMarked,
+  FileCheck,
+  AlertCircle,
+  ExternalLink,
 } from 'lucide-react'
 
 export interface NoteSubject {
@@ -51,6 +58,8 @@ export interface Program {
   id: string
   name: string
   short_code: string
+  duration_years?: number
+  total_semesters?: number
 }
 
 export interface Branch {
@@ -60,14 +69,34 @@ export interface Branch {
   code: string
 }
 
-export interface SubjectOption {
+export interface SubjectItem {
   id: string
   subject_code: string
   subject_name: string
-  semester_number?: number
-  year_number?: number
-  branch_id?: string
+  semester_number: number
+  year_number: number
+  branch_id: string
   program_id?: string
+  credits?: number
+  hours?: number
+  category?: string
+  notesCount?: number
+}
+
+export interface SyllabusUnitItem {
+  id: string
+  subject_id: string
+  unit_number: number
+  unit_title: string
+  hours?: number
+  description?: string
+}
+
+export interface BranchStats {
+  subjectsCount: number
+  notesCount: number
+  yearStats: Record<number, { subjectsCount: number; notesCount: number }>
+  semesterStats: Record<number, { subjectsCount: number; notesCount: number }>
 }
 
 export interface UserProfile {
@@ -79,14 +108,14 @@ export interface UserProfile {
   current_year?: number | null
   current_semester?: number | null
   branches?: { id: string; name: string; code: string } | null
-  programs?: { id: string; name: string; short_code: string } | null
+  programs?: { id: string; name: string; short_code: string; duration_years?: number } | null
 }
 
 interface NotesClientProps {
   initialNotes: Note[]
   programs: Program[]
   branches: Branch[]
-  initialSubjects?: SubjectOption[]
+  branchStats: Record<string, BranchStats>
   userProfile?: UserProfile | null
 }
 
@@ -97,175 +126,193 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / 1048576).toFixed(1)} MB`
 }
 
+function formatDate(iso: string): string {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    })
+  } catch {
+    return iso
+  }
+}
+
 export function NotesClient({
   initialNotes,
   programs,
   branches,
-  initialSubjects = [],
+  branchStats,
   userProfile,
 }: NotesClientProps) {
   const studentBranchId = userProfile?.branch_id
-  const studentBranchCode = userProfile?.branches?.code
-  const studentBranchName = userProfile?.branches?.name
+  const studentBranch = useMemo(() => branches.find((b) => b.id === studentBranchId), [branches, studentBranchId])
+  const studentBranchCode = studentBranch?.code || userProfile?.branches?.code
+  const studentBranchName = studentBranch?.name || userProfile?.branches?.name
   const studentProgramCode = userProfile?.programs?.short_code || 'B.Tech'
   const studentYear = userProfile?.current_year || 1
   const studentSemester = userProfile?.current_semester || 1
   const isAdmin = userProfile?.role === 'admin'
 
-  // View Mode: 'my_branch' (default if student has branch) vs 'explore'
-  const [viewMode, setViewMode] = useState<'my_branch' | 'explore'>(
-    studentBranchId && !isAdmin ? 'my_branch' : 'explore'
-  )
+  // Map programs for quick lookup
+  const programsMap = useMemo(() => {
+    const map = new Map<string, Program>()
+    programs.forEach((p) => map.set(p.id, p))
+    return map
+  }, [programs])
 
-  // Filter States
-  const [selectedBranch, setSelectedBranch] = useState<string>(studentBranchId || 'all')
-  const [selectedProgram, setSelectedProgram] = useState<string>('all')
-  const [selectedYear, setSelectedYear] = useState<string>('all')
-  const [selectedSemester, setSelectedSemester] = useState<string>('all')
-  const [selectedSubject, setSelectedSubject] = useState<string>('all')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [debouncedQuery, setDebouncedQuery] = useState('')
+  // ──────────────── FOLDER EXPLORER STATE ────────────────
+  // Hierarchy: Branch -> Year -> Semester -> Subject -> Notes
+  const [selectedBranch, setSelectedBranch] = useState<Branch | null>(null)
+  const [selectedYear, setSelectedYear] = useState<number | null>(null)
+  const [selectedSemester, setSelectedSemester] = useState<number | null>(null)
+  const [selectedSubject, setSelectedSubject] = useState<SubjectItem | null>(null)
 
-  // Academic subjects for cascading dropdown
-  const [availableSubjects, setAvailableSubjects] = useState<SubjectOption[]>(initialSubjects)
+  // Subject folders loaded dynamically for the selected semester
+  const [semesterSubjects, setSemesterSubjects] = useState<SubjectItem[]>([])
   const [loadingSubjects, setLoadingSubjects] = useState(false)
+  const [subjectFilterQuery, setSubjectFilterQuery] = useState('')
 
-  // Notes data state
-  const [notes, setNotes] = useState<Note[]>(initialNotes)
-  const [totalCount, setTotalCount] = useState<number>(initialNotes.length)
-  const [page, setPage] = useState(1)
-  const [totalPages, setTotalPages] = useState(1)
-  const [isLoading, setIsLoading] = useState(false)
-  const [, startTransition] = useTransition()
+  // Inside Subject Folder: Notes & Syllabus Units
+  const [subjectNotes, setSubjectNotes] = useState<Note[]>([])
+  const [subjectUnits, setSubjectUnits] = useState<SyllabusUnitItem[]>([])
+  const [loadingSubjectContent, setLoadingSubjectContent] = useState(false)
 
-  // Reader Modal State
+  // ──────────────── UNIVERSAL SEARCH STATE ────────────────
+  const [searchQuery, setSearchQuery] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [searchResults, setSearchResults] = useState<Note[]>([])
+  const [searching, setSearching] = useState(false)
+
+  // ──────────────── SECURE PDF READER MODAL ────────────────
   const [loadingNoteId, setLoadingNoteId] = useState<string | null>(null)
   const [activeReadingNote, setActiveReadingNote] = useState<{ note: Note; url: string } | null>(null)
 
-  // Debounce search query
+  // Debounce universal search
   useEffect(() => {
     const handler = setTimeout(() => {
-      setDebouncedQuery(searchQuery.trim())
-      setPage(1)
+      setDebouncedSearch(searchQuery.trim())
     }, 300)
     return () => clearTimeout(handler)
   }, [searchQuery])
 
-  // Reset to "My Branch" view
-  const handleReturnToMyBranch = () => {
-    setViewMode('my_branch')
-    setSelectedBranch(studentBranchId || 'all')
-    setSelectedProgram('all')
-    setSelectedYear('all')
-    setSelectedSemester('all')
-    setSelectedSubject('all')
-    setSearchQuery('')
-    setDebouncedQuery('')
-    setPage(1)
-  }
-
-  // Fetch subjects dynamically when branch or semester changes
+  // Universal Search fetch
   useEffect(() => {
-    let isMounted = true
-    const fetchBranchSubjects = async () => {
-      if (!selectedBranch || selectedBranch === 'all') {
-        setAvailableSubjects([])
-        return
-      }
+    if (!debouncedSearch) {
+      setSearchResults([])
+      setSearching(false)
+      return
+    }
 
+    let isMounted = true
+    const runSearch = async () => {
+      setSearching(true)
+      try {
+        const res = await fetch(`/api/notes?q=${encodeURIComponent(debouncedSearch)}&limit=40`)
+        const data = await res.json()
+        if (isMounted && data.success) {
+          setSearchResults(data.notes || [])
+        }
+      } catch (err) {
+        console.error('Search error:', err)
+      } finally {
+        if (isMounted) setSearching(false)
+      }
+    }
+
+    runSearch()
+    return () => {
+      isMounted = false
+    }
+  }, [debouncedSearch])
+
+  // ──────────────── DYNAMIC SUBJECT FETCHING (Level 4) ────────────────
+  // When a branch and semester are selected, fetch canonical subjects from database
+  useEffect(() => {
+    if (!selectedBranch || !selectedSemester) {
+      setSemesterSubjects([])
+      return
+    }
+
+    let isMounted = true
+    const fetchSubjects = async () => {
       setLoadingSubjects(true)
       try {
         const params = new URLSearchParams()
-        params.set('branchId', selectedBranch)
-        if (selectedSemester !== 'all') {
-          params.set('semester', selectedSemester)
-        }
-        if (selectedYear !== 'all') {
-          params.set('year', selectedYear)
+        params.set('branchId', selectedBranch.id)
+        params.set('semester', selectedSemester.toString())
+        if (selectedYear) {
+          params.set('year', selectedYear.toString())
         }
 
         const res = await fetch(`/api/notes/subjects?${params.toString()}`)
         const data = await res.json()
         if (isMounted && data.success) {
-          setAvailableSubjects(data.subjects || [])
+          setSemesterSubjects(data.subjects || [])
         }
       } catch (err) {
-        console.error('Failed to load branch subjects:', err)
+        console.error('Failed to load canonical subjects for folder:', err)
       } finally {
         if (isMounted) setLoadingSubjects(false)
       }
     }
 
-    fetchBranchSubjects()
+    fetchSubjects()
     return () => {
       isMounted = false
     }
   }, [selectedBranch, selectedSemester, selectedYear])
 
-  // Fetch Notes from API when filters, search, or page change
-  const fetchNotes = useCallback(async () => {
-    setIsLoading(true)
-    try {
-      const params = new URLSearchParams()
-      params.set('mode', viewMode === 'my_branch' ? 'my' : 'explore')
-      params.set('page', page.toString())
-      params.set('limit', '24')
-
-      if (viewMode === 'my_branch') {
-        if (studentBranchId) {
-          params.set('branchId', studentBranchId)
-        }
-        if (selectedSemester !== 'all') {
-          params.set('semester', selectedSemester)
-        }
-      } else {
-        if (selectedBranch !== 'all') params.set('branchId', selectedBranch)
-        if (selectedProgram !== 'all') params.set('programId', selectedProgram)
-        if (selectedYear !== 'all') params.set('year', selectedYear)
-        if (selectedSemester !== 'all') params.set('semester', selectedSemester)
-        if (selectedSubject !== 'all') params.set('subjectId', selectedSubject)
-      }
-
-      if (debouncedQuery) {
-        params.set('q', debouncedQuery)
-      }
-
-      const res = await fetch(`/api/notes?${params.toString()}`)
-      const data = await res.json()
-
-      if (data.success) {
-        startTransition(() => {
-          setNotes(data.notes || [])
-          setTotalCount(data.totalCount || 0)
-          setTotalPages(data.totalPages || 1)
-        })
-      }
-    } catch (err) {
-      console.error('Failed to fetch notes:', err)
-    } finally {
-      setIsLoading(false)
-    }
-  }, [
-    viewMode,
-    page,
-    studentBranchId,
-    selectedBranch,
-    selectedProgram,
-    selectedYear,
-    selectedSemester,
-    selectedSubject,
-    debouncedQuery,
-  ])
-
+  // ──────────────── DYNAMIC NOTES & UNITS FETCHING (Level 5) ────────────────
+  // When a subject is selected, fetch both its published notes and official syllabus units
   useEffect(() => {
-    fetchNotes()
-  }, [fetchNotes])
+    if (!selectedSubject) {
+      setSubjectNotes([])
+      setSubjectUnits([])
+      return
+    }
+
+    let isMounted = true
+    const fetchSubjectDetails = async () => {
+      setLoadingSubjectContent(true)
+      try {
+        const [notesRes, unitsRes] = await Promise.all([
+          fetch(`/api/notes?subjectId=${selectedSubject.id}&limit=50`),
+          fetch(`/api/notes/units?subjectId=${selectedSubject.id}`),
+        ])
+
+        const [notesData, unitsData] = await Promise.all([notesRes.json(), unitsRes.json()])
+
+        if (isMounted) {
+          if (notesData.success) {
+            setSubjectNotes(notesData.notes || [])
+          }
+          if (unitsData.success) {
+            setSubjectUnits(unitsData.units || [])
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load subject notes or units:', err)
+      } finally {
+        if (isMounted) setLoadingSubjectContent(false)
+      }
+    }
+
+    fetchSubjectDetails()
+    return () => {
+      isMounted = false
+    }
+  }, [selectedSubject])
 
   // Prevent download and print keyboard shortcuts while reader is open
   useEffect(() => {
     if (!activeReadingNote) return
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'p' || e.key === 'S' || e.key === 'P')) {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key === 's' || e.key === 'p' || e.key === 'S' || e.key === 'P')
+      ) {
         e.preventDefault()
       }
     }
@@ -281,7 +328,9 @@ export function NotesClient({
     }
     setLoadingNoteId(note.id)
     try {
-      const res = await fetch(`/api/storage/view-url?bucket=notes&path=${encodeURIComponent(note.file_path)}`)
+      const res = await fetch(
+        `/api/storage/view-url?bucket=notes&path=${encodeURIComponent(note.file_path)}`
+      )
       const data = await res.json()
       if (data.url) {
         setActiveReadingNote({ note, url: data.url })
@@ -295,14 +344,110 @@ export function NotesClient({
     }
   }
 
-  const isDivergedFromMyBranch =
-    viewMode === 'explore' ||
-    (studentBranchId && selectedBranch !== studentBranchId) ||
-    Boolean(debouncedQuery)
+  // ──────────────── QUICK NAVIGATION ACTIONS ────────────────
+  const handleOpenMyBranch = () => {
+    if (!studentBranch) return
+    setSelectedBranch(studentBranch)
+    setSelectedYear(null)
+    setSelectedSemester(null)
+    setSelectedSubject(null)
+    setSearchQuery('')
+  }
+
+  const handleJumpToMySemester = () => {
+    if (!studentBranch) return
+    setSelectedBranch(studentBranch)
+    setSelectedYear(studentYear)
+    setSelectedSemester(studentSemester)
+    setSelectedSubject(null)
+    setSearchQuery('')
+  }
+
+  const handleResetToRoot = () => {
+    setSelectedBranch(null)
+    setSelectedYear(null)
+    setSelectedSemester(null)
+    setSelectedSubject(null)
+    setSearchQuery('')
+  }
+
+  // Quick jump directly to a note's subject folder from search
+  const handleJumpToNoteSubject = (note: Note) => {
+    const sub = note.subjects
+    if (!sub) return
+    const b = branches.find((br) => br.id === sub.branch_id)
+    if (b) {
+      setSelectedBranch(b)
+      setSelectedYear(sub.year_number || Math.ceil((sub.semester_number || 1) / 2))
+      setSelectedSemester(sub.semester_number || 1)
+      setSelectedSubject({
+        id: sub.id,
+        subject_code: sub.subject_code,
+        subject_name: sub.subject_name,
+        semester_number: sub.semester_number || 1,
+        year_number: sub.year_number || 1,
+        branch_id: b.id,
+      })
+      setSearchQuery('')
+    }
+  }
+
+  // ──────────────── GROUP NOTES BY SYLLABUS UNIT (Level 5) ────────────────
+  const groupedNotes = useMemo(() => {
+    const unitMap: Record<number, Note[]> = { 1: [], 2: [], 3: [], 4: [], 5: [] }
+    const otherNotes: Note[] = []
+
+    for (const note of subjectNotes) {
+      const text = `${note.title} ${note.description || ''}`.toLowerCase()
+      let matched = false
+
+      for (let u = 1; u <= 5; u++) {
+        const patterns = [
+          `unit ${u}`,
+          `unit-${u}`,
+          `unit${u}`,
+          `u${u}:`,
+          `u${u} `,
+          `unit ${u}:`,
+          `[unit ${u}]`,
+        ]
+        if (patterns.some((p) => text.includes(p))) {
+          unitMap[u].push(note)
+          matched = true
+          break
+        }
+      }
+
+      if (!matched) {
+        otherNotes.push(note)
+      }
+    }
+
+    return { unitMap, otherNotes }
+  }, [subjectNotes])
+
+  // Filter subjects within active semester
+  const filteredSemesterSubjects = useMemo(() => {
+    if (!subjectFilterQuery.trim()) return semesterSubjects
+    const q = subjectFilterQuery.toLowerCase()
+    return semesterSubjects.filter(
+      (s) =>
+        s.subject_code.toLowerCase().includes(q) ||
+        s.subject_name.toLowerCase().includes(q) ||
+        (s.category && s.category.toLowerCase().includes(q))
+    )
+  }, [semesterSubjects, subjectFilterQuery])
+
+  // Compute duration years for selected branch
+  const currentProgramDuration = useMemo(() => {
+    if (!selectedBranch) return 4
+    const prog = programsMap.get(selectedBranch.program_id)
+    return prog?.duration_years || 4
+  }, [selectedBranch, programsMap])
 
   return (
     <div>
-      {/* 1. ACADEMIC CONTEXT BANNER */}
+      {/* ──────────────── 1. ACADEMIC CONTEXT BANNER ──────────────── */}
       <div
         className="glass-card"
         style={{
@@ -321,14 +466,17 @@ export function NotesClient({
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
             <span className="badge badge-green" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
               <GraduationCap size={13} style={{ display: 'inline', marginRight: 4 }} />
-              Academic Curriculum
+              HBTU Academic Curriculum
+            </span>
+            <span className="badge badge-purple" style={{ fontSize: '0.6875rem', fontWeight: 600 }}>
+              Dynamic Folder Explorer
             </span>
             {isAdmin && <span className="badge badge-yellow" style={{ fontSize: '0.6875rem' }}>Admin Access</span>}
           </div>
 
-          <h2
+          <h1
             style={{
-              fontSize: '1.25rem',
+              fontSize: '1.35rem',
               fontWeight: 800,
               fontFamily: 'var(--font-display)',
               letterSpacing: '-0.015em',
@@ -341,7 +489,7 @@ export function NotesClient({
           >
             {userProfile?.branch_id ? (
               <>
-                <span>My Study Notes:</span>
+                <span>My Academic Branch:</span>
                 <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
                   {studentProgramCode}
                 </span>
@@ -355,128 +503,61 @@ export function NotesClient({
                 </span>
               </>
             ) : (
-              <span>University Study Notes · All Branches</span>
+              <span>Harcourt Butler Technical University — Study Notes Explorer</span>
             )}
-          </h2>
+          </h1>
 
           <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', margin: 0 }}>
-            {viewMode === 'my_branch'
-              ? `Showing published notes tailored to ${studentBranchName}. Switch to "Explore Other Branches" to discover cross-branch study materials.`
-              : 'Discovering verified study notes across all engineering and technology departments of HBTU.'}
+            Hierarchical curriculum file explorer: <strong>Branch → Year → Semester → Dynamic Subject → Notes by Unit</strong>.
+            Folders are automatically derived from the official university syllabus and curriculum.
           </p>
         </div>
 
-        {/* 1-Click Return to My Branch Button */}
-        {studentBranchId && isDivergedFromMyBranch && (
-          <button
-            type="button"
-            onClick={handleReturnToMyBranch}
-            className="btn btn-secondary"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              fontSize: '0.8125rem',
-              fontWeight: 700,
-              padding: '0.55rem 1rem',
-              borderColor: 'var(--color-accent)',
-              color: 'var(--color-accent)',
-              backgroundColor: 'var(--color-accent-bg)',
-            }}
-          >
-            <RotateCcw size={14} />
-            Return to My Branch ({studentBranchCode})
-          </button>
+        {/* Quick Branch Actions */}
+        {studentBranch && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={handleJumpToMySemester}
+              className="btn btn-primary"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: '0.8125rem',
+                fontWeight: 700,
+                padding: '0.5rem 0.85rem',
+              }}
+            >
+              <Sparkles size={14} />
+              Open My Current Semester (Sem {studentSemester})
+            </button>
+
+            {selectedBranch?.id !== studentBranch.id && (
+              <button
+                type="button"
+                onClick={handleOpenMyBranch}
+                className="btn btn-secondary"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: '0.8125rem',
+                  fontWeight: 600,
+                  padding: '0.5rem 0.85rem',
+                }}
+              >
+                <FolderOpen size={14} />
+                Open My Branch ({studentBranchCode})
+              </button>
+            )}
+          </div>
         )}
       </div>
 
-      {/* 2. MODE SELECTOR & SEARCH BAR */}
-      <div className="glass-card" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '1rem',
-            marginBottom: '1rem',
-            paddingBottom: '0.75rem',
-            borderBottom: '1px solid var(--border-light)',
-          }}
-        >
-          {/* Dual Exploration Mode Tabs */}
-          <div style={{ display: 'inline-flex', gap: 6, background: 'var(--bg-secondary)', padding: 4, borderRadius: 'var(--radius-md)' }}>
-            {studentBranchId && (
-              <button
-                type="button"
-                onClick={() => {
-                  setViewMode('my_branch')
-                  setSelectedBranch(studentBranchId)
-                  setPage(1)
-                }}
-                style={{
-                  padding: '0.45rem 1rem',
-                  fontSize: '0.8125rem',
-                  fontWeight: 700,
-                  borderRadius: 'var(--radius-sm)',
-                  border: 'none',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  transition: 'all 0.15s ease',
-                  background: viewMode === 'my_branch' ? 'var(--bg-card)' : 'transparent',
-                  color: viewMode === 'my_branch' ? 'var(--color-accent)' : 'var(--text-secondary)',
-                  boxShadow: viewMode === 'my_branch' ? '0 1px 4px rgba(0,0,0,0.06)' : 'none',
-                }}
-              >
-                <GraduationCap size={15} />
-                My Branch ({studentBranchCode})
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => {
-                setViewMode('explore')
-                setPage(1)
-              }}
-              style={{
-                padding: '0.45rem 1rem',
-                fontSize: '0.8125rem',
-                fontWeight: 700,
-                borderRadius: 'var(--radius-sm)',
-                border: 'none',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                transition: 'all 0.15s ease',
-                background: viewMode === 'explore' ? 'var(--bg-card)' : 'transparent',
-                color: viewMode === 'explore' ? 'var(--color-accent)' : 'var(--text-secondary)',
-                boxShadow: viewMode === 'explore' ? '0 1px 4px rgba(0,0,0,0.06)' : 'none',
-              }}
-            >
-              <Globe size={15} />
-              Explore Other Branches
-            </button>
-          </div>
-
-          {/* Quick Stats Indicator */}
-          <div style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span>
-              Showing <strong>{notes.length}</strong> of <strong>{totalCount}</strong> published notes
-            </span>
-            {isLoading && (
-              <span className="badge badge-yellow" style={{ fontSize: '0.6875rem' }}>
-                Updating...
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Global Search Input */}
-        <div style={{ position: 'relative', width: '100%', marginBottom: '1rem' }}>
+      {/* ──────────────── 2. UNIVERSAL SEARCH BAR ──────────────── */}
+      <div className="glass-card" style={{ padding: '0.85rem 1.25rem', marginBottom: '1.25rem' }}>
+        <div style={{ position: 'relative', width: '100%' }}>
           <Search
             size={18}
             style={{
@@ -490,12 +571,14 @@ export function NotesClient({
           <input
             type="text"
             className="form-input"
-            style={{ paddingLeft: 42, paddingRight: searchQuery ? 40 : 14, height: 44, fontSize: '0.875rem' }}
-            placeholder={
-              viewMode === 'my_branch'
-                ? `Search within ${studentBranchName || 'your branch'} notes by title, subject code, or keyword...`
-                : 'Search notes across all branches: title, subject name (e.g. Workshop Practice), subject code (NWS-102), branch...'
-            }
+            style={{
+              paddingLeft: 42,
+              paddingRight: searchQuery ? 40 : 14,
+              height: 44,
+              fontSize: '0.875rem',
+              backgroundColor: 'rgba(255, 255, 255, 0.7)',
+            }}
+            placeholder="Search all study notes, subjects, or topics (e.g. Workshop Practice, NWS-102, Welding, Mathematics)..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -520,625 +603,1440 @@ export function NotesClient({
             </button>
           )}
         </div>
-
-        {/* 3. BRANCH-SPECIFIC OR EXPLORATORY FILTERS */}
-        {viewMode === 'my_branch' ? (
-          /* My Branch Quick Semester Tabs */
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-tertiary)', marginRight: 4 }}>
-              FILTER SEMESTER:
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedSemester('all')
-                setPage(1)
-              }}
-              className={`badge ${selectedSemester === 'all' ? 'badge-green' : 'badge-neutral'}`}
-              style={{ cursor: 'pointer', padding: '0.35rem 0.75rem', fontSize: '0.75rem', fontWeight: 600 }}
-            >
-              All Semesters
-            </button>
-            {[1, 2, 3, 4, 5, 6, 7, 8].map((sem) => {
-              const isSelected = selectedSemester === sem.toString()
-              const isCurrent = studentSemester === sem
-              return (
-                <button
-                  key={sem}
-                  type="button"
-                  onClick={() => {
-                    setSelectedSemester(sem.toString())
-                    setPage(1)
-                  }}
-                  className={`badge ${isSelected ? 'badge-green' : isCurrent ? 'badge-yellow' : 'badge-neutral'}`}
-                  style={{
-                    cursor: 'pointer',
-                    padding: '0.35rem 0.75rem',
-                    fontSize: '0.75rem',
-                    fontWeight: isSelected || isCurrent ? 700 : 500,
-                  }}
-                >
-                  Sem {sem} {isCurrent && '(Current)'}
-                </button>
-              )
-            })}
-          </div>
-        ) : (
-          /* Explore Mode: Cascading Filters Grid */
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-              gap: '0.75rem',
-              alignItems: 'flex-end',
-            }}
-          >
-            {/* Branch Selector */}
-            <div>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: 4 }}>
-                BRANCH
-              </label>
-              <select
-                className="form-input"
-                style={{ height: 38, fontSize: '0.8125rem' }}
-                value={selectedBranch}
-                onChange={(e) => {
-                  setSelectedBranch(e.target.value)
-                  setSelectedSubject('all') // Reset subject when branch changes
-                  setPage(1)
-                }}
-              >
-                <option value="all">All Branches (21)</option>
-                {branches.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.code} — {b.name} {b.id === studentBranchId ? '⭐ (Your Branch)' : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Program Selector */}
-            <div>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: 4 }}>
-                PROGRAM
-              </label>
-              <select
-                className="form-input"
-                style={{ height: 38, fontSize: '0.8125rem' }}
-                value={selectedProgram}
-                onChange={(e) => {
-                  setSelectedProgram(e.target.value)
-                  setPage(1)
-                }}
-              >
-                <option value="all">All Programs</option>
-                {programs.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.short_code} ({p.name})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Year Selector */}
-            <div>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: 4 }}>
-                ACADEMIC YEAR
-              </label>
-              <select
-                className="form-input"
-                style={{ height: 38, fontSize: '0.8125rem' }}
-                value={selectedYear}
-                onChange={(e) => {
-                  setSelectedYear(e.target.value)
-                  setPage(1)
-                }}
-              >
-                <option value="all">All Years</option>
-                <option value="1">Year 1</option>
-                <option value="2">Year 2</option>
-                <option value="3">Year 3</option>
-                <option value="4">Year 4</option>
-              </select>
-            </div>
-
-            {/* Semester Selector */}
-            <div>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: 4 }}>
-                SEMESTER
-              </label>
-              <select
-                className="form-input"
-                style={{ height: 38, fontSize: '0.8125rem' }}
-                value={selectedSemester}
-                onChange={(e) => {
-                  setSelectedSemester(e.target.value)
-                  setPage(1)
-                }}
-              >
-                <option value="all">All Semesters</option>
-                {[1, 2, 3, 4, 5, 6, 7, 8].map((s) => (
-                  <option key={s} value={s.toString()}>
-                    Semester {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Subject Selector (Dynamically populated) */}
-            <div style={{ gridColumn: 'span 1' }}>
-              <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: 4 }}>
-                SUBJECT {loadingSubjects && '(Loading...)'}
-              </label>
-              <select
-                className="form-input"
-                style={{ height: 38, fontSize: '0.8125rem' }}
-                value={selectedSubject}
-                onChange={(e) => {
-                  setSelectedSubject(e.target.value)
-                  setPage(1)
-                }}
-              >
-                <option value="all">
-                  {selectedBranch === 'all'
-                    ? 'All Subjects (Select Branch first)'
-                    : `All Subjects (${availableSubjects.length})`}
-                </option>
-                {availableSubjects.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.subject_code} — {s.subject_name} (Sem {s.semester_number})
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* 4. NOTES GRID */}
-      {notes.length > 0 ? (
-        <>
+      {/* ──────────────── 3. SEARCH RESULTS MODE ──────────────── */}
+      {debouncedSearch ? (
+        <div className="glass-card" style={{ padding: '1.5rem', marginBottom: '1.5rem' }}>
           <div
             style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))',
-              gap: '1.25rem',
-              marginBottom: '2rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '1rem',
+              paddingBottom: '0.75rem',
+              borderBottom: '1px solid var(--border-light)',
             }}
           >
-            {notes.map((note) => {
-              const sub = note.subjects
-              const branchCode = sub?.branches?.code
-              const branchName = sub?.branches?.name
-              const progCode = sub?.programs?.short_code
-              const isBelongingToStudent =
-                note.isMyBranch || (studentBranchId && sub?.branch_id === studentBranchId)
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Search size={18} color="var(--color-accent)" />
+              <h2 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0 }}>
+                Search Results for &quot;{debouncedSearch}&quot;
+              </h2>
+              {searching ? (
+                <span className="badge badge-yellow" style={{ fontSize: '0.6875rem' }}>Searching...</span>
+              ) : (
+                <span className="badge badge-purple" style={{ fontSize: '0.6875rem' }}>
+                  {searchResults.length} {searchResults.length === 1 ? 'note' : 'notes'} found
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="btn btn-secondary"
+              style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem' }}
+            >
+              <X size={13} style={{ marginRight: 4 }} /> Close Search
+            </button>
+          </div>
 
-              return (
-                <div
-                  key={note.id}
-                  className="glass-card"
-                  style={{
-                    padding: '1.25rem',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '0.75rem',
-                    position: 'relative',
-                    border: isBelongingToStudent ? '1px solid rgba(16, 185, 129, 0.4)' : undefined,
-                    transition: 'transform 0.2s ease, box-shadow 0.2s ease',
-                  }}
-                >
-                  {/* Top Branch Attribution Badge */}
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
-                    {isBelongingToStudent ? (
-                      <span
-                        className="badge badge-green"
+          {searchResults.length > 0 ? (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+                gap: '1rem',
+              }}
+            >
+              {searchResults.map((note) => {
+                const sub = note.subjects
+                const branchObj = sub?.branches
+                const progObj = sub?.programs
+
+                return (
+                  <div
+                    key={note.id}
+                    className="glass-card"
+                    style={{
+                      padding: '1.25rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      justifyContent: 'space-between',
+                      borderRadius: 'var(--radius-md)',
+                      border: '1px solid var(--glass-border)',
+                      transition: 'all 0.2s ease',
+                      position: 'relative',
+                    }}
+                  >
+                    <div>
+                      {/* Academic Path Breadcrumb */}
+                      <div
                         style={{
                           fontSize: '0.6875rem',
+                          color: 'var(--color-accent)',
                           fontWeight: 700,
-                          display: 'inline-flex',
+                          marginBottom: 8,
+                          display: 'flex',
                           alignItems: 'center',
                           gap: 4,
+                          flexWrap: 'wrap',
                         }}
                       >
-                        <GraduationCap size={12} />
-                        My Branch · {branchCode || 'LFT'}
-                      </span>
-                    ) : (
-                      <span
-                        className="badge badge-blue"
-                        style={{
-                          fontSize: '0.6875rem',
-                          fontWeight: 700,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 4,
-                        }}
-                      >
-                        <Globe size={12} />
-                        Other Branch · {branchCode || 'All'}
-                      </span>
-                    )}
+                        <span>{progObj?.short_code || 'B.Tech'}</span>
+                        <ChevronRight size={11} />
+                        <span>{branchObj?.code || 'GEN'}</span>
+                        <ChevronRight size={11} />
+                        <span>Year {sub?.year_number || Math.ceil((sub?.semester_number || 1) / 2)}</span>
+                        <ChevronRight size={11} />
+                        <span>Sem {sub?.semester_number}</span>
+                      </div>
 
-                    {sub?.semester_number && (
-                      <span className="badge badge-yellow" style={{ fontSize: '0.625rem' }}>
-                        Sem {sub.semester_number}
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Subject and Title */}
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem', marginTop: 2 }}>
-                    <div
-                      style={{
-                        width: 42,
-                        height: 42,
-                        borderRadius: 'var(--radius-sm)',
-                        background: isBelongingToStudent ? 'rgba(16, 185, 129, 0.12)' : 'rgba(59, 130, 246, 0.12)',
-                        color: isBelongingToStudent ? '#10b981' : '#3b82f6',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        flexShrink: 0,
-                      }}
-                    >
-                      <FileText size={22} />
-                    </div>
-
-                    <div style={{ flex: 1, minWidth: 0 }}>
                       <h3
                         style={{
                           fontSize: '0.9375rem',
                           fontWeight: 700,
-                          marginBottom: 4,
                           lineHeight: 1.35,
+                          marginBottom: 6,
                           color: 'var(--text-primary)',
                         }}
                       >
                         {note.title}
                       </h3>
 
+                      {note.description && (
+                        <p
+                          style={{
+                            fontSize: '0.8125rem',
+                            color: 'var(--text-secondary)',
+                            lineHeight: 1.4,
+                            marginBottom: 10,
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          {note.description}
+                        </p>
+                      )}
+
+                      {/* Subject Badge */}
                       {sub && (
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                          <span className="badge badge-maroon" style={{ fontSize: '0.625rem' }}>
-                            {sub.subject_code}
+                        <div style={{ marginBottom: 10 }}>
+                          <span
+                            className="badge badge-indigo"
+                            style={{ fontSize: '0.6875rem', fontWeight: 600 }}
+                          >
+                            <BookOpen size={11} style={{ marginRight: 4, display: 'inline' }} />
+                            {sub.subject_code} — {sub.subject_name}
                           </span>
-                          <span className="badge badge-neutral" style={{ fontSize: '0.625rem' }}>
-                            {sub.subject_name}
-                          </span>
-                          {branchName && (
-                            <span className="badge badge-neutral" style={{ fontSize: '0.625rem' }}>
-                              {progCode ? `${progCode} ` : ''}
-                              {branchName}
-                            </span>
-                          )}
                         </div>
                       )}
+
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 12,
+                          fontSize: '0.75rem',
+                          color: 'var(--text-tertiary)',
+                          marginBottom: 12,
+                        }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <HardDrive size={13} /> {formatFileSize(note.file_size)}
+                        </span>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <Calendar size={13} /> {formatDate(note.created_at)}
+                        </span>
+                      </div>
                     </div>
-                  </div>
 
-                  {/* Description */}
-                  {note.description && (
-                    <p
-                      style={{
-                        fontSize: '0.8125rem',
-                        color: 'var(--text-secondary)',
-                        lineHeight: 1.5,
-                        margin: 0,
-                      }}
-                    >
-                      {note.description.length > 140
-                        ? `${note.description.slice(0, 140)}...`
-                        : note.description}
-                    </p>
-                  )}
-
-                  {/* Read Online Button (Strict Read-Only Viewer) */}
-                  {note.file_path && (
-                    <div style={{ marginTop: 'auto', paddingTop: '0.5rem' }}>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
                       <button
                         type="button"
                         onClick={() => openNoteReader(note)}
                         disabled={loadingNoteId === note.id}
                         className="btn btn-primary"
                         style={{
-                          padding: '0.5rem 1rem',
+                          flex: 1,
                           fontSize: '0.8125rem',
-                          fontWeight: 700,
-                          display: 'inline-flex',
+                          padding: '0.45rem 0.75rem',
+                          display: 'flex',
                           alignItems: 'center',
-                          gap: 7,
-                          width: '100%',
                           justifyContent: 'center',
-                          background: isBelongingToStudent
-                            ? 'linear-gradient(135deg, #10b981, #06b6d4)'
-                            : 'linear-gradient(135deg, #2563eb, #0284c7)',
+                          gap: 6,
                         }}
                       >
-                        {loadingNoteId === note.id ? (
-                          'Opening Reader...'
-                        ) : (
-                          <>
-                            <BookOpen size={14} /> Read Online
-                          </>
-                        )}
+                        <Eye size={14} />
+                        {loadingNoteId === note.id ? 'Opening...' : 'Read Note'}
                       </button>
+
+                      {sub && (
+                        <button
+                          type="button"
+                          onClick={() => handleJumpToNoteSubject(note)}
+                          className="btn btn-secondary"
+                          title="Open Subject Folder"
+                          style={{
+                            fontSize: '0.8125rem',
+                            padding: '0.45rem 0.75rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                          }}
+                        >
+                          <Folder size={14} />
+                          Folder
+                        </button>
+                      )}
                     </div>
-                  )}
-
-                  {/* Card Footer Metadata */}
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.875rem',
-                      fontSize: '0.6875rem',
-                      color: 'var(--text-tertiary)',
-                      borderTop: '1px solid var(--border-light)',
-                      paddingTop: '0.65rem',
-                      marginTop: '0.25rem',
-                    }}
-                  >
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                      <Eye size={12} /> {note.view_count}
-                    </span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                      <HardDrive size={12} /> {formatFileSize(note.file_size)}
-                    </span>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                      <Calendar size={12} />{' '}
-                      {new Date(note.created_at).toLocaleDateString('en-IN', {
-                        day: 'numeric',
-                        month: 'short',
-                      })}
-                    </span>
-                    <span
-                      className="badge badge-green"
-                      style={{ fontSize: '0.5625rem', marginLeft: 'auto', padding: '0.15rem 0.45rem' }}
-                    >
-                      READ ONLY
-                    </span>
                   </div>
-                </div>
-              )
-            })}
-          </div>
+                )
+              })}
+            </div>
+          ) : !searching ? (
+            <div style={{ textAlign: 'center', padding: '3rem 1rem' }}>
+              <FileText size={40} style={{ color: 'var(--text-tertiary)', marginBottom: '0.75rem' }} />
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: 4 }}>
+                No study notes found for &quot;{debouncedSearch}&quot;
+              </h3>
+              <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', maxWidth: 460, margin: '0 auto' }}>
+                Try searching by subject name (e.g. &quot;Workshop Practice&quot;), subject code (e.g. &quot;NWS-102&quot;),
+                or browse through the branch folders below.
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
-          {/* Pagination Controls */}
-          {totalPages > 1 && (
-            <div
+      {/* ──────────────── 4. HIERARCHICAL FOLDER BREADCRUMB BAR ──────────────── */}
+      {!debouncedSearch && (
+        <div
+          className="glass-card"
+          style={{
+            padding: '0.75rem 1.25rem',
+            marginBottom: '1.5rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '0.75rem',
+          }}
+        >
+          {/* Breadcrumbs Trail */}
+          <nav aria-label="Folder Navigation" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+            {/* Root: Study Notes */}
+            <button
+              type="button"
+              onClick={handleResetToRoot}
               style={{
-                display: 'flex',
+                display: 'inline-flex',
                 alignItems: 'center',
-                justifyContent: 'center',
-                gap: 12,
-                marginTop: '1.5rem',
+                gap: 5,
+                background: !selectedBranch ? 'var(--color-accent-bg)' : 'transparent',
+                color: !selectedBranch ? 'var(--color-accent)' : 'var(--text-secondary)',
+                fontWeight: !selectedBranch ? 700 : 500,
+                border: 'none',
+                cursor: 'pointer',
+                padding: '0.3rem 0.6rem',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '0.8125rem',
+                transition: 'all 0.15s ease',
               }}
             >
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={page <= 1}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                style={{ fontSize: '0.8125rem' }}
-              >
-                Previous
-              </button>
-              <span style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
-                Page <strong>{page}</strong> of <strong>{totalPages}</strong>
-              </span>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={page >= totalPages}
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                style={{ fontSize: '0.8125rem' }}
-              >
-                Next
-              </button>
-            </div>
-          )}
-        </>
-      ) : (
-        /* 5. EMPTY STATES */
-        <div className="glass-card" style={{ textAlign: 'center', padding: '4rem 2rem' }}>
-          <FileText size={48} color="var(--text-tertiary)" style={{ margin: '0 auto 1.25rem auto' }} />
+              <Folder size={15} color="var(--color-accent)" />
+              <span>All Branches</span>
+            </button>
 
-          {viewMode === 'my_branch' ? (
-            <div>
-              <h2 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '0.5rem' }}>
-                {selectedSemester !== 'all'
-                  ? `No Notes Published for Semester ${selectedSemester} Yet`
-                  : `No Notes Published for ${studentBranchName || 'Your Branch'} Yet`}
-              </h2>
-              <p
-                style={{
-                  fontSize: '0.875rem',
-                  color: 'var(--text-secondary)',
-                  maxWidth: 520,
-                  margin: '0 auto 1.5rem auto',
-                  lineHeight: 1.5,
-                }}
-              >
-                Study notes for your curriculum are published regularly. You can view other semesters in your branch or explore shared curriculum resources from other branches.
-              </p>
-              <div style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-                {selectedSemester !== 'all' && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedSemester('all')}
-                    className="btn btn-secondary"
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8125rem' }}
-                  >
-                    <Layers size={14} />
-                    View All Semesters in My Branch
-                  </button>
-                )}
+            {/* Level 2: Branch */}
+            {selectedBranch && (
+              <>
+                <ChevronRight size={13} style={{ color: 'var(--text-tertiary)' }} />
                 <button
                   type="button"
                   onClick={() => {
-                    setViewMode('explore')
-                    setSelectedBranch('all')
-                    setSelectedSemester('all')
-                    setSearchQuery('')
+                    setSelectedYear(null)
+                    setSelectedSemester(null)
+                    setSelectedSubject(null)
                   }}
-                  className="btn btn-primary"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8125rem' }}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    background: selectedBranch && !selectedYear ? 'var(--color-accent-bg)' : 'transparent',
+                    color: selectedBranch && !selectedYear ? 'var(--color-accent)' : 'var(--text-secondary)',
+                    fontWeight: selectedBranch && !selectedYear ? 700 : 500,
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '0.3rem 0.6rem',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '0.8125rem',
+                    transition: 'all 0.15s ease',
+                  }}
                 >
-                  <Globe size={14} />
-                  Explore Other Branches
+                  <FolderOpen size={14} />
+                  <span>{selectedBranch.code} ({selectedBranch.name})</span>
                 </button>
-              </div>
-            </div>
-          ) : (
-            <div>
-              <h2 style={{ fontSize: '1.25rem', fontWeight: 800, marginBottom: '0.5rem' }}>
-                No Notes Found
-              </h2>
-              <p
-                style={{
-                  fontSize: '0.875rem',
-                  color: 'var(--text-secondary)',
-                  maxWidth: 480,
-                  margin: '0 auto 1.5rem auto',
-                }}
-              >
-                No study notes matched your current search and filter combination. Try clearing some filters or searching with a different term.
-              </p>
-              <div style={{ display: 'inline-flex', gap: 10 }}>
+              </>
+            )}
+
+            {/* Level 3: Year */}
+            {selectedYear && (
+              <>
+                <ChevronRight size={13} style={{ color: 'var(--text-tertiary)' }} />
                 <button
                   type="button"
                   onClick={() => {
-                    setSelectedBranch('all')
-                    setSelectedProgram('all')
-                    setSelectedYear('all')
-                    setSelectedSemester('all')
-                    setSelectedSubject('all')
-                    setSearchQuery('')
+                    setSelectedSemester(null)
+                    setSelectedSubject(null)
                   }}
-                  className="btn btn-secondary"
-                  style={{ fontSize: '0.8125rem' }}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    background: selectedYear && !selectedSemester ? 'var(--color-accent-bg)' : 'transparent',
+                    color: selectedYear && !selectedSemester ? 'var(--color-accent)' : 'var(--text-secondary)',
+                    fontWeight: selectedYear && !selectedSemester ? 700 : 500,
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '0.3rem 0.6rem',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '0.8125rem',
+                    transition: 'all 0.15s ease',
+                  }}
                 >
-                  Clear All Filters
+                  <Folder size={14} />
+                  <span>Year {selectedYear}</span>
                 </button>
-                {studentBranchId && (
-                  <button
-                    type="button"
-                    onClick={handleReturnToMyBranch}
-                    className="btn btn-primary"
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '0.8125rem' }}
-                  >
-                    <RotateCcw size={14} />
-                    Return to My Branch
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
+              </>
+            )}
+
+            {/* Level 4: Semester */}
+            {selectedSemester && (
+              <>
+                <ChevronRight size={13} style={{ color: 'var(--text-tertiary)' }} />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedSubject(null)
+                  }}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    background: selectedSemester && !selectedSubject ? 'var(--color-accent-bg)' : 'transparent',
+                    color: selectedSemester && !selectedSubject ? 'var(--color-accent)' : 'var(--text-secondary)',
+                    fontWeight: selectedSemester && !selectedSubject ? 700 : 500,
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '0.3rem 0.6rem',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '0.8125rem',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <Layers size={14} />
+                  <span>Semester {selectedSemester}</span>
+                </button>
+              </>
+            )}
+
+            {/* Level 5: Subject */}
+            {selectedSubject && (
+              <>
+                <ChevronRight size={13} style={{ color: 'var(--text-tertiary)' }} />
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    background: 'var(--color-accent-bg)',
+                    color: 'var(--color-accent)',
+                    fontWeight: 700,
+                    padding: '0.3rem 0.6rem',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '0.8125rem',
+                  }}
+                >
+                  <BookOpen size={14} />
+                  <span>{selectedSubject.subject_code} — {selectedSubject.subject_name}</span>
+                </span>
+              </>
+            )}
+          </nav>
+
+          {/* Quick Back Button */}
+          {selectedSubject ? (
+            <button
+              type="button"
+              onClick={() => setSelectedSubject(null)}
+              className="btn btn-secondary"
+              style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <ArrowLeft size={13} /> Back to Subjects
+            </button>
+          ) : selectedSemester ? (
+            <button
+              type="button"
+              onClick={() => setSelectedSemester(null)}
+              className="btn btn-secondary"
+              style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <ArrowLeft size={13} /> Back to Semesters
+            </button>
+          ) : selectedYear ? (
+            <button
+              type="button"
+              onClick={() => setSelectedYear(null)}
+              className="btn btn-secondary"
+              style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <ArrowLeft size={13} /> Back to Years
+            </button>
+          ) : selectedBranch ? (
+            <button
+              type="button"
+              onClick={() => setSelectedBranch(null)}
+              className="btn btn-secondary"
+              style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <ArrowLeft size={13} /> Back to All Branches
+            </button>
+          ) : null}
         </div>
       )}
 
-      {/* 6. ONLINE DOCUMENT READER MODAL (STRICT READ-ONLY MODE) */}
+      {/* ──────────────── 5. MAIN EXPLORER VIEWS ──────────────── */}
+      {!debouncedSearch && (
+        <>
+          {/* ════════════════ LEVEL 1: BRANCH FOLDERS ════════════════ */}
+          {!selectedBranch && (
+            <div>
+              <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                <div>
+                  <h2 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <FolderOpen size={20} color="var(--color-accent)" />
+                    Academic Department Branches
+                  </h2>
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', margin: '2px 0 0 0' }}>
+                    Select a branch folder to explore its academic years, curriculum subjects, and verified study notes.
+                  </p>
+                </div>
+                <span className="badge badge-neutral" style={{ fontSize: '0.75rem' }}>
+                  {branches.length} Branches Available
+                </span>
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))',
+                  gap: '1.25rem',
+                }}
+              >
+                {branches.map((b) => {
+                  const isMyBranch = Boolean(studentBranchId && b.id === studentBranchId)
+                  const prog = programsMap.get(b.program_id)
+                  const stats = branchStats[b.id] || { subjectsCount: 0, notesCount: 0 }
+
+                  return (
+                    <div
+                      key={b.id}
+                      onClick={() => {
+                        setSelectedBranch(b)
+                        setSelectedYear(null)
+                        setSelectedSemester(null)
+                        setSelectedSubject(null)
+                      }}
+                      className="glass-card"
+                      style={{
+                        padding: '1.35rem',
+                        borderRadius: 'var(--radius-lg)',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        border: isMyBranch
+                          ? '2px solid var(--color-accent)'
+                          : '1px solid var(--glass-border)',
+                        background: isMyBranch
+                          ? 'linear-gradient(135deg, rgba(118, 80, 245, 0.08), rgba(71, 139, 250, 0.08))'
+                          : 'var(--glass-surface)',
+                        position: 'relative',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        justifyContent: 'space-between',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.transform = 'translateY(-3px)'
+                        e.currentTarget.style.boxShadow = '0 10px 25px rgba(118, 80, 245, 0.15)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.transform = 'translateY(0)'
+                        e.currentTarget.style.boxShadow = 'none'
+                      }}
+                    >
+                      <div>
+                        {/* Top Badge Row */}
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                          <div
+                            style={{
+                              width: 44,
+                              height: 44,
+                              borderRadius: 'var(--radius-md)',
+                              background: isMyBranch
+                                ? 'linear-gradient(135deg, rgba(118, 80, 245, 0.25), rgba(71, 139, 250, 0.25))'
+                                : 'linear-gradient(135deg, rgba(169, 211, 255, 0.35), rgba(231, 201, 248, 0.35))',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              color: 'var(--color-accent)',
+                            }}
+                          >
+                            <Folder size={24} />
+                          </div>
+
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            {isMyBranch && (
+                              <span className="badge badge-purple" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+                                ⭐ My Branch
+                              </span>
+                            )}
+                            <span className="badge badge-neutral" style={{ fontSize: '0.6875rem' }}>
+                              {prog?.short_code || 'B.Tech'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Branch Code & Name */}
+                        <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: 4 }}>
+                          {b.code}
+                        </div>
+                        <div style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-secondary)', lineHeight: 1.35, marginBottom: 14 }}>
+                          {b.name}
+                        </div>
+                      </div>
+
+                      {/* Bottom Metadata Stats */}
+                      <div
+                        style={{
+                          paddingTop: 12,
+                          borderTop: '1px solid var(--border-light)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          fontSize: '0.75rem',
+                          color: 'var(--text-tertiary)',
+                        }}
+                      >
+                        <span>{stats.subjectsCount} Subjects</span>
+                        {stats.notesCount > 0 ? (
+                          <span className="badge badge-green" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+                            <FileText size={11} style={{ display: 'inline', marginRight: 3 }} />
+                            {stats.notesCount} {stats.notesCount === 1 ? 'Note' : 'Notes'}
+                          </span>
+                        ) : (
+                          <span>0 Notes</span>
+                        )}
+                        <ChevronRight size={14} style={{ color: 'var(--color-accent)' }} />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ════════════════ LEVEL 2: YEAR FOLDERS ════════════════ */}
+          {selectedBranch && !selectedYear && (
+            <div>
+              <div style={{ marginBottom: '1.25rem' }}>
+                <h2 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <FolderOpen size={20} color="var(--color-accent)" />
+                  Academic Years · {selectedBranch.name} ({selectedBranch.code})
+                </h2>
+                <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', margin: '2px 0 0 0' }}>
+                  Select an academic year to explore its semesters and official curriculum subject folders.
+                </p>
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                  gap: '1.25rem',
+                }}
+              >
+                {Array.from({ length: currentProgramDuration }, (_, idx) => idx + 1).map((yearNum) => {
+                  const isCurrentYear = Boolean(
+                    studentBranchId &&
+                    selectedBranch.id === studentBranchId &&
+                    studentYear === yearNum
+                  )
+                  const stats = branchStats[selectedBranch.id]?.yearStats?.[yearNum] || {
+                    subjectsCount: 0,
+                    notesCount: 0,
+                  }
+                  const semA = (yearNum - 1) * 2 + 1
+                  const semB = (yearNum - 1) * 2 + 2
+
+                  return (
+                    <div
+                      key={yearNum}
+                      onClick={() => {
+                        setSelectedYear(yearNum)
+                        setSelectedSemester(null)
+                        setSelectedSubject(null)
+                      }}
+                      className="glass-card"
+                      style={{
+                        padding: '1.5rem',
+                        borderRadius: 'var(--radius-lg)',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        border: isCurrentYear
+                          ? '2px solid var(--color-accent)'
+                          : '1px solid var(--glass-border)',
+                        background: isCurrentYear
+                          ? 'linear-gradient(135deg, rgba(118, 80, 245, 0.08), rgba(71, 139, 250, 0.08))'
+                          : 'var(--glass-surface)',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.transform = 'translateY(-3px)'
+                        e.currentTarget.style.boxShadow = '0 10px 25px rgba(118, 80, 245, 0.15)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.transform = 'translateY(0)'
+                        e.currentTarget.style.boxShadow = 'none'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                        <div
+                          style={{
+                            width: 44,
+                            height: 44,
+                            borderRadius: 'var(--radius-md)',
+                            background: 'linear-gradient(135deg, rgba(169, 211, 255, 0.4), rgba(231, 201, 248, 0.4))',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: 'var(--color-accent)',
+                          }}
+                        >
+                          <Folder size={24} />
+                        </div>
+
+                        {isCurrentYear && (
+                          <span className="badge badge-purple" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+                            ⭐ Current Year
+                          </span>
+                        )}
+                      </div>
+
+                      <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
+                        Academic Year {yearNum}
+                      </div>
+                      <div style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginBottom: 14 }}>
+                        Semesters {semA} & {semB}
+                      </div>
+
+                      <div
+                        style={{
+                          paddingTop: 12,
+                          borderTop: '1px solid var(--border-light)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          fontSize: '0.75rem',
+                          color: 'var(--text-tertiary)',
+                        }}
+                      >
+                        <span>{stats.subjectsCount} Subjects</span>
+                        {stats.notesCount > 0 ? (
+                          <span className="badge badge-green" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+                            {stats.notesCount} {stats.notesCount === 1 ? 'Note' : 'Notes'}
+                          </span>
+                        ) : (
+                          <span>0 Notes</span>
+                        )}
+                        <ChevronRight size={14} style={{ color: 'var(--color-accent)' }} />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ════════════════ LEVEL 3: SEMESTER FOLDERS ════════════════ */}
+          {selectedBranch && selectedYear && !selectedSemester && (
+            <div>
+              <div style={{ marginBottom: '1.25rem' }}>
+                <h2 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Layers size={20} color="var(--color-accent)" />
+                  Year {selectedYear} Semesters · {selectedBranch.name} ({selectedBranch.code})
+                </h2>
+                <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', margin: '2px 0 0 0' }}>
+                  Select a semester to view dynamic subject folders synchronized from the university curriculum.
+                </p>
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+                  gap: '1.25rem',
+                }}
+              >
+                {[(selectedYear - 1) * 2 + 1, (selectedYear - 1) * 2 + 2].map((semNum) => {
+                  const isCurrentSemester = Boolean(
+                    studentBranchId &&
+                    selectedBranch.id === studentBranchId &&
+                    studentSemester === semNum
+                  )
+                  const stats = branchStats[selectedBranch.id]?.semesterStats?.[semNum] || {
+                    subjectsCount: 0,
+                    notesCount: 0,
+                  }
+
+                  return (
+                    <div
+                      key={semNum}
+                      onClick={() => {
+                        setSelectedSemester(semNum)
+                        setSelectedSubject(null)
+                      }}
+                      className="glass-card"
+                      style={{
+                        padding: '1.5rem',
+                        borderRadius: 'var(--radius-lg)',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                        border: isCurrentSemester
+                          ? '2px solid var(--color-accent)'
+                          : '1px solid var(--glass-border)',
+                        background: isCurrentSemester
+                          ? 'linear-gradient(135deg, rgba(118, 80, 245, 0.08), rgba(71, 139, 250, 0.08))'
+                          : 'var(--glass-surface)',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.transform = 'translateY(-3px)'
+                        e.currentTarget.style.boxShadow = '0 10px 25px rgba(118, 80, 245, 0.15)'
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.transform = 'translateY(0)'
+                        e.currentTarget.style.boxShadow = 'none'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                        <div
+                          style={{
+                            width: 44,
+                            height: 44,
+                            borderRadius: 'var(--radius-md)',
+                            background: 'linear-gradient(135deg, rgba(169, 211, 255, 0.45), rgba(231, 201, 248, 0.45))',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: 'var(--color-accent)',
+                          }}
+                        >
+                          <Folder size={24} />
+                        </div>
+
+                        {isCurrentSemester && (
+                          <span className="badge badge-purple" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+                            ⭐ Current Semester
+                          </span>
+                        )}
+                      </div>
+
+                      <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
+                        Semester {semNum}
+                      </div>
+                      <div style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginBottom: 14 }}>
+                        Academic Year {selectedYear} · {selectedBranch.code}
+                      </div>
+
+                      <div
+                        style={{
+                          paddingTop: 12,
+                          borderTop: '1px solid var(--border-light)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          fontSize: '0.75rem',
+                          color: 'var(--text-tertiary)',
+                        }}
+                      >
+                        <span>{stats.subjectsCount} Subjects</span>
+                        {stats.notesCount > 0 ? (
+                          <span className="badge badge-green" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+                            {stats.notesCount} {stats.notesCount === 1 ? 'Note' : 'Notes'}
+                          </span>
+                        ) : (
+                          <span>0 Notes</span>
+                        )}
+                        <ChevronRight size={14} style={{ color: 'var(--color-accent)' }} />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ════════════════ LEVEL 4: SUBJECT FOLDERS (DYNAMIC FROM SYLLABUS/CURRICULUM) ════════════════ */}
+          {selectedBranch && selectedYear && selectedSemester && !selectedSubject && (
+            <div>
+              {/* Header and In-Semester Filter */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: '1.25rem',
+                  flexWrap: 'wrap',
+                  gap: '1rem',
+                }}
+              >
+                <div>
+                  <h2 style={{ fontSize: '1.15rem', fontWeight: 800, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <BookOpen size={20} color="var(--color-accent)" />
+                    Semester {selectedSemester} Subjects · {selectedBranch.name} ({selectedBranch.code})
+                  </h2>
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', margin: '2px 0 0 0' }}>
+                    Folders are automatically generated from official Syllabus & Curriculum records in the database.
+                  </p>
+                </div>
+
+                {/* Filter Subjects Input */}
+                <div style={{ minWidth: 240 }}>
+                  <input
+                    type="text"
+                    className="form-input"
+                    style={{ height: 38, fontSize: '0.8125rem', padding: '0.4rem 0.75rem' }}
+                    placeholder="Filter subjects by name or code..."
+                    value={subjectFilterQuery}
+                    onChange={(e) => setSubjectFilterQuery(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {loadingSubjects ? (
+                <div style={{ textAlign: 'center', padding: '3rem 1rem' }}>
+                  <div className="spinner" style={{ margin: '0 auto 1rem auto' }} />
+                  <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                    Loading canonical subjects for Semester {selectedSemester}...
+                  </p>
+                </div>
+              ) : filteredSemesterSubjects.length > 0 ? (
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+                    gap: '1.25rem',
+                  }}
+                >
+                  {filteredSemesterSubjects.map((s) => {
+                    const notesCount = s.notesCount || 0
+
+                    return (
+                      <div
+                        key={s.id}
+                        onClick={() => setSelectedSubject(s)}
+                        className="glass-card"
+                        style={{
+                          padding: '1.35rem',
+                          borderRadius: 'var(--radius-lg)',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease',
+                          border: notesCount > 0 ? '1px solid rgba(118, 80, 245, 0.35)' : '1px solid var(--glass-border)',
+                          background: 'var(--glass-surface)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          justifyContent: 'space-between',
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.transform = 'translateY(-3px)'
+                          e.currentTarget.style.boxShadow = '0 10px 25px rgba(118, 80, 245, 0.15)'
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.transform = 'translateY(0)'
+                          e.currentTarget.style.boxShadow = 'none'
+                        }}
+                      >
+                        <div>
+                          {/* Top Badges */}
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                            <div
+                              style={{
+                                width: 40,
+                                height: 40,
+                                borderRadius: 'var(--radius-md)',
+                                background: 'linear-gradient(135deg, rgba(118, 80, 245, 0.15), rgba(71, 139, 250, 0.15))',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: 'var(--color-accent)',
+                              }}
+                            >
+                              <Folder size={22} />
+                            </div>
+
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                              {s.category && (
+                                <span className="badge badge-neutral" style={{ fontSize: '0.6875rem' }}>
+                                  {s.category}
+                                </span>
+                              )}
+                              {typeof s.credits === 'number' && (
+                                <span className="badge badge-purple" style={{ fontSize: '0.6875rem', fontWeight: 600 }}>
+                                  {s.credits} Credits
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Subject Code & Name */}
+                          <div style={{ fontSize: '1.05rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
+                            {s.subject_code}
+                          </div>
+                          <div style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-secondary)', lineHeight: 1.35, marginBottom: 12 }}>
+                            {s.subject_name}
+                          </div>
+                        </div>
+
+                        {/* Bottom Row */}
+                        <div
+                          style={{
+                            paddingTop: 10,
+                            borderTop: '1px solid var(--border-light)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            fontSize: '0.75rem',
+                          }}
+                        >
+                          {notesCount > 0 ? (
+                            <span className="badge badge-green" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+                              <FileText size={11} style={{ display: 'inline', marginRight: 3 }} />
+                              {notesCount} {notesCount === 1 ? 'Note Available' : 'Notes Available'}
+                            </span>
+                          ) : (
+                            <span style={{ color: 'var(--text-tertiary)' }}>No notes uploaded yet</span>
+                          )}
+
+                          <span style={{ color: 'var(--color-accent)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 2 }}>
+                            Open Folder <ChevronRight size={14} />
+                          </span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="glass-card" style={{ textAlign: 'center', padding: '3rem 1rem' }}>
+                  <BookOpen size={40} style={{ color: 'var(--text-tertiary)', marginBottom: '0.75rem' }} />
+                  <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: 4 }}>
+                    No subjects found for Semester {selectedSemester}
+                  </h3>
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+                    {subjectFilterQuery ? 'Try clearing your filter search.' : 'No curriculum subjects mapped in database for this semester.'}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ════════════════ LEVEL 5: INSIDE SUBJECT FOLDER (NOTES BY UNIT) ════════════════ */}
+          {selectedSubject && (
+            <div>
+              {/* Subject Header Card */}
+              <div
+                className="glass-card"
+                style={{
+                  padding: '1.5rem',
+                  marginBottom: '1.5rem',
+                  borderLeft: '4px solid var(--color-accent)',
+                  background: 'linear-gradient(135deg, rgba(118, 80, 245, 0.06), rgba(71, 139, 250, 0.06))',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                      <span className="badge badge-purple" style={{ fontSize: '0.75rem', fontWeight: 700 }}>
+                        {selectedSubject.subject_code}
+                      </span>
+                      {selectedSubject.category && (
+                        <span className="badge badge-neutral" style={{ fontSize: '0.6875rem' }}>
+                          {selectedSubject.category}
+                        </span>
+                      )}
+                      {typeof selectedSubject.credits === 'number' && (
+                        <span className="badge badge-indigo" style={{ fontSize: '0.6875rem' }}>
+                          {selectedSubject.credits} Credits
+                        </span>
+                      )}
+                      {typeof selectedSubject.hours === 'number' && (
+                        <span className="badge badge-neutral" style={{ fontSize: '0.6875rem' }}>
+                          {selectedSubject.hours} Teaching Hours
+                        </span>
+                      )}
+                    </div>
+
+                    <h2 style={{ fontSize: '1.35rem', fontWeight: 800, margin: '4px 0 8px 0', color: 'var(--text-primary)' }}>
+                      {selectedSubject.subject_name}
+                    </h2>
+
+                    <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', margin: 0 }}>
+                      Official curriculum subject for <strong>{selectedBranch?.name} ({selectedBranch?.code})</strong> · Semester {selectedSubject.semester_number}.
+                      Notes are organized by official syllabus units and practical workbooks.
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <Link
+                      href={`/syllabus?branch=${selectedBranch?.id || ''}&semester=${selectedSubject.semester_number}`}
+                      className="btn btn-secondary"
+                      style={{
+                        fontSize: '0.8125rem',
+                        padding: '0.5rem 0.85rem',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                      }}
+                    >
+                      <BookOpen size={14} />
+                      View Full Syllabus
+                    </Link>
+
+                    <span className="badge badge-green" style={{ fontSize: '0.8125rem', fontWeight: 700, padding: '0.4rem 0.75rem' }}>
+                      <FileCheck size={14} style={{ display: 'inline', marginRight: 4 }} />
+                      {subjectNotes.length} {subjectNotes.length === 1 ? 'Note Available' : 'Notes Available'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {loadingSubjectContent ? (
+                <div style={{ textAlign: 'center', padding: '3rem 1rem' }}>
+                  <div className="spinner" style={{ margin: '0 auto 1rem auto' }} />
+                  <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                    Loading syllabus units and notes for {selectedSubject.subject_code}...
+                  </p>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+                  {/* Render 5 Syllabus Units */}
+                  {[1, 2, 3, 4, 5].map((uNum) => {
+                    const unitMeta = subjectUnits.find((u) => u.unit_number === uNum)
+                    const notesInUnit = groupedNotes.unitMap[uNum] || []
+
+                    return (
+                      <div
+                        key={uNum}
+                        className="glass-card"
+                        style={{
+                          padding: '1.5rem',
+                          borderRadius: 'var(--radius-lg)',
+                          border: notesInUnit.length > 0 ? '1px solid rgba(118, 80, 245, 0.3)' : '1px solid var(--glass-border)',
+                        }}
+                      >
+                        {/* Unit Section Title */}
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            marginBottom: '1rem',
+                            paddingBottom: '0.75rem',
+                            borderBottom: '1px solid var(--border-light)',
+                            flexWrap: 'wrap',
+                            gap: '0.5rem',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div
+                              style={{
+                                width: 34,
+                                height: 34,
+                                borderRadius: 'var(--radius-sm)',
+                                background: 'linear-gradient(135deg, rgba(118, 80, 245, 0.15), rgba(71, 139, 250, 0.15))',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                color: 'var(--color-accent)',
+                                fontWeight: 800,
+                                fontSize: '0.875rem',
+                              }}
+                            >
+                              U{uNum}
+                            </div>
+                            <div>
+                              <h3 style={{ fontSize: '1rem', fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>
+                                Unit {uNum}{unitMeta?.unit_title ? `: ${unitMeta.unit_title}` : ''}
+                              </h3>
+                              {unitMeta?.description && (
+                                <p
+                                  style={{
+                                    fontSize: '0.75rem',
+                                    color: 'var(--text-secondary)',
+                                    margin: '2px 0 0 0',
+                                    lineHeight: 1.35,
+                                    display: '-webkit-box',
+                                    WebkitLineClamp: 1,
+                                    WebkitBoxOrient: 'vertical',
+                                    overflow: 'hidden',
+                                  }}
+                                  title={unitMeta.description}
+                                >
+                                  {unitMeta.description}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          <span
+                            className={notesInUnit.length > 0 ? 'badge badge-green' : 'badge badge-neutral'}
+                            style={{ fontSize: '0.6875rem', fontWeight: 600 }}
+                          >
+                            {notesInUnit.length} {notesInUnit.length === 1 ? 'Note' : 'Notes'}
+                          </span>
+                        </div>
+
+                        {/* Unit Notes Cards */}
+                        {notesInUnit.length > 0 ? (
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))',
+                              gap: '1rem',
+                            }}
+                          >
+                            {notesInUnit.map((note) => (
+                              <NoteCard
+                                key={note.id}
+                                note={note}
+                                loading={loadingNoteId === note.id}
+                                onRead={() => openNoteReader(note)}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <div
+                            style={{
+                              padding: '1.25rem',
+                              textAlign: 'center',
+                              borderRadius: 'var(--radius-md)',
+                              background: 'rgba(255, 255, 255, 0.4)',
+                              border: '1px dashed var(--border-light)',
+                            }}
+                          >
+                            <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', margin: 0 }}>
+                              No notes uploaded for Unit {uNum} yet. Faculty and verified admin notes will appear here.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+
+                  {/* Section: Other Resources, Lab Manuals & Question Banks */}
+                  {groupedNotes.otherNotes.length > 0 && (
+                    <div
+                      className="glass-card"
+                      style={{
+                        padding: '1.5rem',
+                        borderRadius: 'var(--radius-lg)',
+                        border: '1px solid rgba(16, 185, 129, 0.35)',
+                        background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.04), rgba(71, 139, 250, 0.04))',
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          marginBottom: '1rem',
+                          paddingBottom: '0.75rem',
+                          borderBottom: '1px solid var(--border-light)',
+                          flexWrap: 'wrap',
+                          gap: '0.5rem',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <div
+                            style={{
+                              width: 34,
+                              height: 34,
+                              borderRadius: 'var(--radius-sm)',
+                              background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(71, 139, 250, 0.2))',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              color: '#10b981',
+                            }}
+                          >
+                            <BookMarked size={18} />
+                          </div>
+                          <div>
+                            <h3 style={{ fontSize: '1rem', fontWeight: 800, margin: 0, color: 'var(--text-primary)' }}>
+                              Laboratory Workbooks, Manuals & Additional Resources
+                            </h3>
+                            <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', margin: '2px 0 0 0' }}>
+                              Practical manuals, important question banks, and complete course materials.
+                            </p>
+                          </div>
+                        </div>
+
+                        <span className="badge badge-green" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+                          {groupedNotes.otherNotes.length} {groupedNotes.otherNotes.length === 1 ? 'Resource' : 'Resources'}
+                        </span>
+                      </div>
+
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))',
+                          gap: '1rem',
+                        }}
+                      >
+                        {groupedNotes.otherNotes.map((note) => (
+                          <NoteCard
+                            key={note.id}
+                            note={note}
+                            loading={loadingNoteId === note.id}
+                            onRead={() => openNoteReader(note)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ──────────────── 6. SECURE READ-ONLY PDF READER MODAL ──────────────── */}
       {activeReadingNote && (
         <div
+          role="dialog"
+          aria-modal="true"
           style={{
             position: 'fixed',
             inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.88)',
-            backdropFilter: 'blur(8px)',
             zIndex: 9999,
+            backgroundColor: 'rgba(23, 32, 68, 0.75)',
+            backdropFilter: 'blur(10px)',
             display: 'flex',
+            flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
             padding: '1rem',
           }}
-          onClick={() => setActiveReadingNote(null)}
           onContextMenu={(e) => e.preventDefault()}
         >
           <div
+            className="glass-card"
             style={{
               width: '100%',
-              maxWidth: '980px',
+              maxWidth: 1100,
               height: '92vh',
-              backgroundColor: 'var(--bg-elevated)',
-              backdropFilter: 'blur(28px) saturate(160%)',
-              borderRadius: 'var(--radius-xl)',
-              border: '1px solid var(--border-glass)',
               display: 'flex',
               flexDirection: 'column',
+              borderRadius: 'var(--radius-lg)',
               overflow: 'hidden',
-              boxShadow: 'var(--shadow-modal)',
+              boxShadow: '0 25px 60px rgba(0, 0, 0, 0.35)',
+              border: '1px solid rgba(255, 255, 255, 0.9)',
+              background: '#ffffff',
             }}
-            onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal header */}
+            {/* Modal Header */}
             <div
               style={{
                 padding: '0.85rem 1.25rem',
+                borderBottom: '1px solid var(--border-light)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                borderBottom: '1px solid var(--divider)',
-                background: 'var(--bg-glass-card)',
-                backdropFilter: 'blur(16px)',
+                backgroundColor: 'rgba(244, 244, 255, 0.9)',
+                backdropFilter: 'blur(8px)',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                <span className="badge badge-green" style={{ fontSize: '0.625rem', padding: '0.2rem 0.5rem' }}>
-                  <Lock size={10} style={{ display: 'inline', marginRight: 3 }} /> Secure Reader
-                </span>
-                <span
-                  style={{
-                    fontSize: '0.875rem',
-                    fontWeight: 700,
-                    color: 'var(--text-primary)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {activeReadingNote.note.title}
-                </span>
+                <FileText size={18} color="var(--color-accent)" style={{ flexShrink: 0 }} />
+                <div style={{ minWidth: 0 }}>
+                  <h3
+                    style={{
+                      fontSize: '0.9375rem',
+                      fontWeight: 800,
+                      margin: 0,
+                      color: 'var(--text-primary)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {activeReadingNote.note.title}
+                  </h3>
+                  <div
+                    style={{
+                      fontSize: '0.75rem',
+                      color: 'var(--text-secondary)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
+                  >
+                    <span>{formatFileSize(activeReadingNote.note.file_size)}</span>
+                    <span>·</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: '#10b981', fontWeight: 600 }}>
+                      <Lock size={11} /> Read-Only Academic Access
+                    </span>
+                  </div>
+                </div>
               </div>
+
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const iframe = document.getElementById('note-viewer-frame') as HTMLIFrameElement
-                    if (iframe?.requestFullscreen) iframe.requestFullscreen()
-                  }}
-                  className="btn btn-secondary"
-                  style={{ padding: '0.35rem 0.65rem', fontSize: '0.75rem', color: '#94a3b8' }}
-                  title="Full Screen"
-                >
-                  <Maximize2 size={13} />
-                </button>
+                <span className="badge badge-yellow" style={{ fontSize: '0.6875rem', fontWeight: 600 }}>
+                  Protected Document
+                </span>
                 <button
                   type="button"
                   onClick={() => setActiveReadingNote(null)}
-                  className="btn btn-secondary"
-                  style={{ padding: '0.35rem 0.65rem', fontSize: '0.75rem', color: '#94a3b8' }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    padding: 6,
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                    color: 'var(--text-secondary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  title="Close PDF reader"
                 >
-                  <X size={15} />
+                  <X size={20} />
                 </button>
               </div>
             </div>
 
-            {/* Embedded PDF Viewer with download/print controls suppressed */}
-            <iframe
-              id="note-viewer-frame"
-              src={`${activeReadingNote.url}#toolbar=0&navpanes=0&scrollbar=1`}
-              title={activeReadingNote.note.title}
-              style={{
-                width: '100%',
-                flex: 1,
-                border: 'none',
-                background: '#334155',
-              }}
-            />
+            {/* Embedded PDF iframe (Anti-Download configured) */}
+            <div style={{ flex: 1, position: 'relative', backgroundColor: '#e2e8f0' }}>
+              <iframe
+                src={`${activeReadingNote.url}#toolbar=0&navpanes=0&scrollbar=1`}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  border: 'none',
+                }}
+                title={activeReadingNote.note.title}
+              />
+            </div>
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ──────────────── NOTE CARD COMPONENT ────────────────
+interface NoteCardProps {
+  note: Note
+  loading: boolean
+  onRead: () => void
+}
+
+function NoteCard({ note, loading, onRead }: NoteCardProps) {
+  return (
+    <div
+      className="glass-card"
+      style={{
+        padding: '1.25rem',
+        borderRadius: 'var(--radius-md)',
+        border: '1px solid var(--glass-border)',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'space-between',
+        background: 'var(--glass-surface)',
+        transition: 'all 0.2s ease',
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.transform = 'translateY(-2px)'
+        e.currentTarget.style.boxShadow = '0 8px 20px rgba(118, 80, 245, 0.12)'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.transform = 'translateY(0)'
+        e.currentTarget.style.boxShadow = 'none'
+      }}
+    >
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <span className="badge badge-green" style={{ fontSize: '0.6875rem', fontWeight: 700 }}>
+            📄 Verified PDF
+          </span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <HardDrive size={12} /> {formatFileSize(note.file_size)}
+          </span>
+        </div>
+
+        <h4
+          style={{
+            fontSize: '0.9375rem',
+            fontWeight: 700,
+            lineHeight: 1.35,
+            color: 'var(--text-primary)',
+            marginBottom: 6,
+          }}
+        >
+          {note.title}
+        </h4>
+
+        {note.description && (
+          <p
+            style={{
+              fontSize: '0.8125rem',
+              color: 'var(--text-secondary)',
+              lineHeight: 1.4,
+              marginBottom: 12,
+              display: '-webkit-box',
+              WebkitLineClamp: 3,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+          >
+            {note.description}
+          </p>
+        )}
+      </div>
+
+      <div style={{ paddingTop: 10, borderTop: '1px solid var(--border-light)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+          <Calendar size={12} /> {formatDate(note.created_at)}
+        </span>
+
+        <button
+          type="button"
+          onClick={onRead}
+          disabled={loading}
+          className="btn btn-primary"
+          style={{
+            fontSize: '0.8125rem',
+            padding: '0.4rem 0.85rem',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            fontWeight: 700,
+          }}
+        >
+          <Eye size={14} />
+          {loading ? 'Opening...' : 'Read Note'}
+        </button>
+      </div>
     </div>
   )
 }

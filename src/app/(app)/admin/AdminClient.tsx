@@ -75,6 +75,10 @@ interface SubjectItem {
   program_id: string
   branch_id: string
   semester_number: number
+  year_number?: number
+  credits?: number
+  hours?: number
+  category?: string
 }
 
 interface NoteItem {
@@ -879,11 +883,15 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
   const [branches, setBranches] = useState<BranchItem[]>([])
   const [subjects, setSubjects] = useState<SubjectItem[]>([])
 
-  // Notes Upload State
+  // Notes Upload State (Hierarchical: Program -> Branch -> Year -> Semester -> Subject -> Unit -> Topic)
   const [noteProgramId, setNoteProgramId] = useState('')
   const [noteBranchId, setNoteBranchId] = useState('')
+  const [noteYear, setNoteYear] = useState(1)
   const [noteSemester, setNoteSemester] = useState(1)
   const [noteSubjectId, setNoteSubjectId] = useState('')
+  const [noteUnit, setNoteUnit] = useState('1')
+  const [noteTopic, setNoteTopic] = useState('')
+  const [noteUnitsList, setNoteUnitsList] = useState<Array<{ id: string; unit_number: number; unit_title: string; description?: string }>>([])
   const [noteTitle, setNoteTitle] = useState('')
   const [noteDescription, setNoteDescription] = useState('')
   const [noteFile, setNoteFile] = useState<File | null>(null)
@@ -1083,12 +1091,36 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
   const effectiveNoteBranchId = availableNoteBranches.some((b) => b.id === noteBranchId)
     ? noteBranchId
     : availableNoteBranches[0]?.id || ''
+  const selectedNoteProgram = programs.find((p) => p.id === noteProgramId)
+  const noteProgramDuration = selectedNoteProgram?.duration_years || 4
+
   const availableNoteSubjects = subjects.filter(
     (s) => s.branch_id === effectiveNoteBranchId && s.semester_number === Number(noteSemester)
   )
   const effectiveNoteSubjectId = availableNoteSubjects.some((s) => s.id === noteSubjectId)
     ? noteSubjectId
     : availableNoteSubjects[0]?.id || ''
+
+  // Fetch dynamic syllabus units for the selected subject
+  useEffect(() => {
+    if (!effectiveNoteSubjectId) {
+      setNoteUnitsList([])
+      return
+    }
+    let isMounted = true
+    fetch(`/api/notes/units?subjectId=${effectiveNoteSubjectId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (isMounted && data.success) {
+          setNoteUnitsList(data.units || [])
+        }
+      })
+      .catch((err) => console.error('Failed to load subject units:', err))
+
+    return () => {
+      isMounted = false
+    }
+  }, [effectiveNoteSubjectId])
 
   // Load uploaded notes and books when Manage tab is active
   const loadContent = async () => {
@@ -1190,14 +1222,36 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
 
       setNoteProgress(75)
 
+      // Format title with Unit prefix if specified
+      let finalTitle = noteTitle.trim()
+      if (noteUnit && noteUnit !== 'other') {
+        const unitPrefix = `[Unit ${noteUnit}]`
+        if (!finalTitle.toLowerCase().includes(`unit ${noteUnit}`) && !finalTitle.includes(unitPrefix)) {
+          finalTitle = `${unitPrefix} ${finalTitle}`
+        }
+      }
+
+      // Format description with Unit and Topic
+      const descParts: string[] = []
+      if (noteUnit && noteUnit !== 'other') {
+        descParts.push(`Unit: ${noteUnit}`)
+      }
+      if (noteTopic.trim()) {
+        descParts.push(`Topic: ${noteTopic.trim()}`)
+      }
+      if (noteDescription.trim()) {
+        descParts.push(noteDescription.trim())
+      }
+      const combinedDescription = descParts.join('\n\n') || null
+
       // 3. Insert published note record in database
       const saveRes = await fetch('/api/admin/notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: noteTitle.trim(),
-          description: noteDescription.trim() || null,
-      subjectId: effectiveNoteSubjectId,
+          title: finalTitle,
+          description: combinedDescription,
+          subjectId: effectiveNoteSubjectId,
           filePath: signData.path,
           fileSize: noteFile.size,
           fileType: 'application/pdf',
@@ -1214,6 +1268,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
       // Reset form
       setNoteTitle('')
       setNoteDescription('')
+      setNoteTopic('')
       setNoteFile(null)
     } catch (err: unknown) {
       setNoteMessage(`Error: ${err instanceof Error ? err.message : 'Upload failed'}`)
@@ -2658,11 +2713,15 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.75rem' }}>
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label" style={{ fontSize: '0.75rem' }}>Degree Program</label>
+                  <label className="form-label" style={{ fontSize: '0.75rem' }}>1. Degree Program</label>
                   <select
                     className="form-select"
                     value={noteProgramId}
-                    onChange={(e) => setNoteProgramId(e.target.value)}
+                    onChange={(e) => {
+                      setNoteProgramId(e.target.value)
+                      setNoteYear(1)
+                      setNoteSemester(1)
+                    }}
                     style={{ fontSize: '0.8125rem' }}
                   >
                     {programs.map((p) => (
@@ -2672,7 +2731,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label" style={{ fontSize: '0.75rem' }}>Branch</label>
+                  <label className="form-label" style={{ fontSize: '0.75rem' }}>2. Academic Branch</label>
                   <select
                     className="form-select"
                     value={effectiveNoteBranchId}
@@ -2688,21 +2747,41 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label" style={{ fontSize: '0.75rem' }}>Semester</label>
+                  <label className="form-label" style={{ fontSize: '0.75rem' }}>3. Academic Year</label>
+                  <select
+                    className="form-select"
+                    value={noteYear}
+                    onChange={(e) => {
+                      const yr = Number(e.target.value)
+                      setNoteYear(yr)
+                      setNoteSemester((yr - 1) * 2 + 1)
+                    }}
+                    style={{ fontSize: '0.8125rem' }}
+                  >
+                    {Array.from({ length: noteProgramDuration }, (_, i) => i + 1).map((yr) => (
+                      <option key={yr} value={yr}>Year {yr}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label className="form-label" style={{ fontSize: '0.75rem' }}>4. Semester</label>
                   <select
                     className="form-select"
                     value={noteSemester}
                     onChange={(e) => setNoteSemester(Number(e.target.value))}
                     style={{ fontSize: '0.8125rem' }}
                   >
-                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((s) => (
+                    {[(noteYear - 1) * 2 + 1, (noteYear - 1) * 2 + 2].map((s) => (
                       <option key={s} value={s}>Semester {s}</option>
                     ))}
                   </select>
                 </div>
 
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label className="form-label" style={{ fontSize: '0.75rem' }}>Subject</label>
+                <div className="form-group" style={{ marginBottom: 0, gridColumn: 'span 2' }}>
+                  <label className="form-label" style={{ fontSize: '0.75rem' }}>
+                    5. Dynamic Subject (From University Syllabus & Curriculum)
+                  </label>
                   <select
                     className="form-select"
                     value={effectiveNoteSubjectId}
@@ -2712,26 +2791,64 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                   >
                     {availableNoteSubjects.length > 0 ? (
                       availableNoteSubjects.map((s) => (
-                        <option key={s.id} value={s.id}>[{s.subject_code}] {s.subject_name}</option>
+                        <option key={s.id} value={s.id}>
+                          [{s.subject_code}] {s.subject_name} ({s.category || 'Curriculum'} · {s.credits ?? 4} Credits)
+                        </option>
                       ))
                     ) : (
-                      <option value="">No subjects found for this semester</option>
+                      <option value="">No subjects found for this semester in the database</option>
                     )}
+                  </select>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 0, gridColumn: 'span 2' }}>
+                  <label className="form-label" style={{ fontSize: '0.75rem' }}>
+                    6. Syllabus Unit Classification
+                  </label>
+                  <select
+                    className="form-select"
+                    value={noteUnit}
+                    onChange={(e) => setNoteUnit(e.target.value)}
+                    style={{ fontSize: '0.8125rem' }}
+                  >
+                    {[1, 2, 3, 4, 5].map((u) => {
+                      const uMeta = noteUnitsList.find((unit) => unit.unit_number === u)
+                      return (
+                        <option key={u} value={u.toString()}>
+                          Unit {u}{uMeta?.unit_title ? `: ${uMeta.unit_title}` : ''}
+                        </option>
+                      )
+                    })}
+                    <option value="other">
+                      Other / Practical Workbook / Lab Manual / Important Question Bank
+                    </option>
                   </select>
                 </div>
               </div>
             </div>
 
-            {/* Note Title & Description */}
-            <div className="form-group">
-              <label className="form-label">Note Title</label>
-              <input
-                className="form-input"
-                placeholder="e.g., Unit 1 & 2 Complete Handwriting Lecture Notes"
-                value={noteTitle}
-                onChange={(e) => setNoteTitle(e.target.value)}
-                required
-              />
+            {/* Note Topic & Title */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '0.75rem', marginBottom: '1rem' }}>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Topic / Practical Name</label>
+                <input
+                  className="form-input"
+                  placeholder="e.g., Electric Arc & Oxy-Acetylene Gas Welding"
+                  value={noteTopic}
+                  onChange={(e) => setNoteTopic(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">Note Document Title</label>
+                <input
+                  className="form-input"
+                  placeholder="e.g., Welding Shop Practical Notes & Safety Workbook"
+                  value={noteTitle}
+                  onChange={(e) => setNoteTitle(e.target.value)}
+                  required
+                />
+              </div>
             </div>
 
             <div className="form-group">

@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server'
 import { getCachedSubjectsForBranch, type CachedSubject } from '@/lib/academic/cache'
+import { createClient } from '@/lib/supabase/server'
+
+export interface SubjectWithNotesCount extends CachedSubject {
+  notesCount: number
+}
 
 export async function GET(request: Request) {
   try {
@@ -21,14 +26,40 @@ export async function GET(request: Request) {
       })
     }
 
+    // Fetch published notes count for these subjects
+    const supabase = await createClient()
+    const subjectIds = subjects.map((s) => s.id)
+    const countsMap: Record<string, number> = {}
+
+    if (subjectIds.length > 0) {
+      const { data: notesData } = await supabase
+        .from('notes')
+        .select('subject_id')
+        .in('subject_id', subjectIds)
+        .eq('status', 'published')
+
+      if (notesData) {
+        for (const n of notesData) {
+          if (n.subject_id) {
+            countsMap[n.subject_id] = (countsMap[n.subject_id] || 0) + 1
+          }
+        }
+      }
+    }
+
+    const subjectsWithCounts: SubjectWithNotesCount[] = subjects.map((s) => ({
+      ...s,
+      notesCount: countsMap[s.id] || 0,
+    }))
+
     return NextResponse.json(
       {
         success: true,
-        subjects,
+        subjects: subjectsWithCounts,
       },
       {
         headers: {
-          'Cache-Control': 'public, max-age=300, stale-while-revalidate=86400',
+          'Cache-Control': 'public, max-age=60, stale-while-revalidate=300',
         },
       }
     )
