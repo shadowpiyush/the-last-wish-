@@ -30,12 +30,23 @@ import {
   ChevronLeft,
   ChevronRight,
   Phone,
+  Pause,
+  Play,
+  RefreshCw,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import Image from 'next/image'
+import {
+  MAX_EBOOK_PDF_SIZE_MB,
+  MAX_EBOOK_FILE_SIZE_BYTES,
+  MULTIPART_THRESHOLD_BYTES,
+  DEFAULT_PART_SIZE_BYTES,
+  MAX_PARALLEL_CHUNKS,
+  MAX_CHUNK_RETRIES,
+} from '@/lib/config/ebooks'
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024 // 50 MB (Supabase Cloud Storage limit for notes)
-const MAX_EBOOK_FILE_SIZE = 500 * 1024 * 1024 // 500 MB (Cloudflare R2 Direct Multipart Upload limit)
+const MAX_EBOOK_FILE_SIZE = MAX_EBOOK_FILE_SIZE_BYTES // 500 MB (Cloudflare R2 Direct Upload limit)
 
 interface ProfileRow {
   id: string
@@ -202,6 +213,10 @@ export interface AdminUserItem {
   updated_at: string
   last_sign_in_at: string | null
   email_confirmed_at?: string | null
+  email_verified?: boolean
+  auth_provider?: string | null
+  phone_confirmed_at?: string | null
+  is_phone_verified?: boolean
   profile_picture_mime_type?: string | null
   profile_picture_width?: number | null
   profile_picture_height?: number | null
@@ -928,9 +943,35 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
   }>({})
   const bookAbortControllerRef = useRef<AbortController | null>(null)
   const activeUploadRef = useRef<{ uploadId: string; fileKey: string } | null>(null)
+  const isPausedRef = useRef(false)
+  const [bookIsPaused, setBookIsPaused] = useState(false)
+  const [bookCorsError, setBookCorsError] = useState(false)
+  const [bookSpeedText, setBookSpeedText] = useState('')
+  const [bookEtaText, setBookEtaText] = useState('')
+  const [bookChunkStats, setBookChunkStats] = useState<{ completed: number; total: number } | null>(null)
+
+  // Pause / Resume in-progress eBook upload
+  const handleTogglePauseBookUpload = () => {
+    if (!bookUploading) return
+    if (bookIsPaused) {
+      isPausedRef.current = false
+      setBookIsPaused(false)
+      // Resume upload from pending chunks
+      handleUploadEbook(undefined, true)
+    } else {
+      isPausedRef.current = true
+      setBookIsPaused(true)
+      if (bookAbortControllerRef.current) {
+        bookAbortControllerRef.current.abort()
+      }
+      setBookStatusText('Upload paused. Click Resume to continue.')
+    }
+  }
 
   // Cancel in-progress R2 multipart upload
   const handleCancelBookUpload = async () => {
+    isPausedRef.current = false
+    setBookIsPaused(false)
     if (bookAbortControllerRef.current) {
       bookAbortControllerRef.current.abort()
     }
@@ -947,7 +988,16 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
       }
       activeUploadRef.current = null
     }
+    // Clean up local storage cache if present
+    if (bookPdfFile) {
+      try {
+        localStorage.removeItem(`ebook_upload_${bookPdfFile.name}_${bookPdfFile.size}`)
+      } catch {}
+    }
     setBookUploading(false)
+    setBookChunkStats(null)
+    setBookSpeedText('')
+    setBookEtaText('')
     setBookStatusText('Upload cancelled by user.')
     setBookMessage('eBook upload was cancelled.')
   }
@@ -1277,12 +1327,15 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
     }
   }
 
-  // Upload eBook Handler (Direct Browser -> Cloudflare R2 Multipart Upload, Supports 145 MB+ PDFs)
-  const handleUploadEbook = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setBookMessage('')
-    setBookSuccessId('')
-    setBookFieldErrors({})
+  // Upload eBook Handler (Direct Browser -> Cloudflare R2: Single PUT ≤ 100MB, Multipart > 100MB up to 500MB)
+  const handleUploadEbook = async (e?: React.FormEvent, isResume = false) => {
+    if (e) e.preventDefault()
+    if (!isResume) {
+      setBookMessage('')
+      setBookSuccessId('')
+      setBookFieldErrors({})
+      setBookCorsError(false)
+    }
 
     const errors: typeof bookFieldErrors = {}
 
@@ -1349,15 +1402,21 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
     const pdfFile = bookPdfFile
     const abortController = new AbortController()
     bookAbortControllerRef.current = abortController
+    isPausedRef.current = false
+    setBookIsPaused(false)
 
     setBookUploading(true)
-    setBookProgress(3)
-    setBookStatusText('Initializing eBook upload...')
+    if (!isResume) {
+      setBookProgress(3)
+      setBookStatusText('Initializing eBook upload...')
+    }
+
+    const sessionKey = `ebook_upload_${encodeURIComponent(pdfFile.name)}_${pdfFile.size}`
 
     try {
       let coverImageUrl: string | null = null
 
-      // 1. Upload Cover Thumbnail if provided (lightweight image stored in Supabase covers bucket)
+      // 1. Upload Cover Thumbnail if provided (stored in Supabase covers bucket)
       if (coverImageFile) {
         setBookStatusText('Uploading cover thumbnail...')
         try {
@@ -1389,56 +1448,267 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
         }
       }
 
-      setBookProgress(6)
-      setBookStatusText('Initiating Cloudflare R2 multipart upload...')
+      // Check upload strategy based on file size threshold:
+      // Files ≤ 100 MB use direct single PUT presigned URL.
+      // Files > 100 MB use Cloudflare R2 multipart upload with 16 MB chunks.
+      const isMultipart = pdfFile.size > MULTIPART_THRESHOLD_BYTES
 
-      // 2. Initiate Cloudflare R2 Multipart Upload via server
-      const initRes = await fetch('/api/admin/ebooks/upload/initiate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: cleanTitle,
-          author: cleanAuthor,
-          fileName: pdfFile.name,
-          fileSize: pdfFile.size,
-          contentType: 'application/pdf',
-          description: bookDescription.trim() || undefined,
-        }),
-        signal: abortController.signal,
-      })
+      if (!isMultipart) {
+        // ── STRATEGY A: SINGLE PRESIGNED PUT (≤ 100 MB) ──
+        setBookProgress(6)
+        setBookStatusText('Requesting direct Cloudflare R2 upload authorization...')
 
-      const { ok: initOk, data: initData, error: initError, field: initField } = await safeFetchJson(initRes)
-      if (!initOk || !initData?.uploadId || !initData?.fileKey) {
-        if (initField) {
-          const fKey = initField === 'fileName' || initField === 'fileSize' ? 'pdf' : initField
-          setBookFieldErrors({ [fKey]: initError || 'Invalid field' })
-          setBookMessage("We couldn't upload this eBook. Please check the highlighted fields and try again.")
-        } else {
-          setBookMessage(`Error: ${initError || 'Failed to initiate Cloudflare R2 multipart upload.'}`)
-        }
-        return
-      }
-
-      const { uploadId, fileKey, partSize, totalParts } = initData
-      activeUploadRef.current = { uploadId, fileKey }
-
-      // 3. Batch sign upload parts (presigned URLs directly to R2)
-      setBookProgress(10)
-      setBookStatusText(`Signing ${totalParts} upload chunks...`)
-
-      const partNumbers = Array.from({ length: totalParts }, (_, i) => i + 1)
-      const signedPartsMap = new Map<number, string>()
-
-      for (let i = 0; i < partNumbers.length; i += 40) {
-        const batch = partNumbers.slice(i, i + 40)
-        const signRes = await fetch('/api/admin/ebooks/upload/sign-part', {
+        const initRes = await fetch('/api/admin/ebooks/upload/initiate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            uploadId,
-            fileKey,
-            partNumbers: batch,
+            title: cleanTitle,
+            author: cleanAuthor,
+            fileName: pdfFile.name,
+            fileSize: pdfFile.size,
+            contentType: 'application/pdf',
+            description: bookDescription.trim() || undefined,
           }),
+          signal: abortController.signal,
+        })
+
+        const { ok: initOk, data: initData, error: initError, field: initField } = await safeFetchJson(initRes)
+        if (!initOk || !initData?.uploadUrl || !initData?.fileKey) {
+          if (initField) {
+            const fKey = initField === 'fileName' || initField === 'fileSize' ? 'pdf' : initField
+            setBookFieldErrors({ [fKey]: initError || 'Invalid field' })
+            setBookMessage("We couldn't upload this eBook. Please check the highlighted fields and try again.")
+          } else {
+            setBookMessage(`Error: ${initError || 'Failed to initiate direct Cloudflare R2 upload.'}`)
+          }
+          return
+        }
+
+        const { uploadUrl, fileKey } = initData
+        activeUploadRef.current = { uploadId: '', fileKey }
+
+        setBookProgress(10)
+        setBookStatusText(`Uploading ${(pdfFile.size / (1024 * 1024)).toFixed(1)} MB directly to Cloudflare R2...`)
+
+        // Upload directly from browser to R2 via XMLHttpRequest for accurate progress and speed metrics
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest()
+          xhr.open('PUT', uploadUrl)
+          xhr.setRequestHeader('Content-Type', 'application/pdf')
+
+          const startTime = Date.now()
+          xhr.upload.onprogress = (ev) => {
+            if (ev.lengthComputable && ev.total > 0) {
+              const elapsedSec = (Date.now() - startTime) / 1000
+              const bytesPerSec = elapsedSec > 0 ? ev.loaded / elapsedSec : 0
+              const speedMB = (bytesPerSec / (1024 * 1024)).toFixed(1)
+              const remainingBytes = ev.total - ev.loaded
+              const etaSec = bytesPerSec > 0 ? Math.ceil(remainingBytes / bytesPerSec) : 0
+              const etaStr = etaSec > 60 ? `${Math.ceil(etaSec / 60)}m remaining` : `${etaSec}s remaining`
+              const percent = Math.min(90, Math.round((ev.loaded / ev.total) * 82) + 10)
+              setBookProgress(percent)
+              setBookSpeedText(`${speedMB} MB/s`)
+              setBookEtaText(etaStr)
+              setBookStatusText(
+                `Uploading: ${(ev.loaded / (1024 * 1024)).toFixed(1)} / ${(ev.total / (1024 * 1024)).toFixed(1)} MB (${speedMB} MB/s · ${etaStr})`
+              )
+            }
+          }
+
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve()
+            } else {
+              reject(new Error(`Cloudflare R2 returned HTTP ${xhr.status}: ${xhr.statusText}`))
+            }
+          }
+
+          xhr.onerror = () => {
+            setBookCorsError(true)
+            reject(new Error('Direct upload to Cloudflare R2 failed (CORS or network error).'))
+          }
+
+          xhr.onabort = () => {
+            reject(new Error(isPausedRef.current ? 'Upload paused' : 'Upload cancelled'))
+          }
+
+          abortController.signal.addEventListener('abort', () => xhr.abort())
+          xhr.send(pdfFile)
+        })
+
+        setBookProgress(93)
+        setBookStatusText('Finalizing eBook registration in Digital Library...')
+
+        // Complete single PUT registration in database
+        const compRes = await fetch('/api/admin/ebooks/upload/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            strategy: 'single_put',
+            fileKey,
+            title: cleanTitle,
+            subtitle: bookSubtitle.trim() || null,
+            author: cleanAuthor,
+            publisher: bookPublisher.trim() || 'HBTU Digital Press',
+            edition: bookEdition.trim() || null,
+            publicationYear: Number(bookYear) || new Date().getFullYear(),
+            totalPages: Number(bookPages) || 100,
+            description: bookDescription.trim() || null,
+            coverImageUrl,
+            fileName: pdfFile.name,
+            fileSize: pdfFile.size,
+            mappings: academicMappings.map((g) => ({
+              programId: g.programId || null,
+              branchIds: g.branchIds || [],
+              year: g.year ? Number(g.year) : null,
+              semesters: g.semesters || [],
+              subjectIds: g.subjectIds || [],
+              category: g.category || 'Textbook',
+            })),
+          }),
+          signal: abortController.signal,
+        })
+
+        const { ok: compOk, data: compData, error: compError, field: compField } = await safeFetchJson(compRes)
+        if (!compOk || !compData?.success) {
+          if (compField) {
+            const fKey = compField === 'totalPages' ? 'pages' : compField === 'publicationYear' ? 'year' : compField
+            setBookFieldErrors({ [fKey]: compError || 'Invalid field' })
+            setBookMessage("We couldn't upload this eBook. Please check the highlighted fields and try again.")
+          } else {
+            setBookMessage(`Error: ${compError || 'Failed to complete eBook registration in Supabase.'}`)
+          }
+          return
+        }
+
+        activeUploadRef.current = null
+        setBookProgress(100)
+        setBookStatusText('Upload completed!')
+        const mappingSummary =
+          academicMappings.length > 0
+            ? `with ${academicMappings.length} academic mapping combination(s)`
+            : 'as a General Library resource'
+        setBookMessage(`✅ eBook uploaded directly to Cloudflare R2 and published successfully ${mappingSummary}!`)
+        setBookSuccessId(compData.ebook?.id || compData.libraryBook?.id || '')
+        setBookFieldErrors({})
+
+        // Reset form
+        setBookTitle('')
+        setBookSubtitle('')
+        setBookAuthor('')
+        setBookPublisher('')
+        setBookEdition('')
+        setBookDescription('')
+        setBookPdfFile(null)
+        setCoverImageFile(null)
+        setCoverPreview(null)
+        setAcademicMappings([])
+        setBookSpeedText('')
+        setBookEtaText('')
+        setBookChunkStats(null)
+        loadContent()
+        return
+      }
+
+      // ── STRATEGY B: CLOUDFLARE R2 MULTIPART UPLOAD (> 100 MB) ──
+      let uploadId = ''
+      let fileKey = ''
+      let partSize = DEFAULT_PART_SIZE_BYTES
+      let totalParts = Math.ceil(pdfFile.size / partSize)
+      const completedPartsMap = new Map<number, string>()
+
+      // Check if resuming from cached session
+      let cachedSession: {
+        uploadId: string
+        fileKey: string
+        partSize: number
+        totalParts: number
+        completedParts: { PartNumber: number; ETag: string }[]
+      } | null = null
+
+      try {
+        const raw = localStorage.getItem(sessionKey)
+        if (raw) cachedSession = JSON.parse(raw)
+      } catch {}
+
+      if (isResume && cachedSession?.uploadId && cachedSession?.fileKey) {
+        uploadId = cachedSession.uploadId
+        fileKey = cachedSession.fileKey
+        partSize = cachedSession.partSize || DEFAULT_PART_SIZE_BYTES
+        totalParts = cachedSession.totalParts || Math.ceil(pdfFile.size / partSize)
+        if (Array.isArray(cachedSession.completedParts)) {
+          for (const cp of cachedSession.completedParts) {
+            completedPartsMap.set(cp.PartNumber, cp.ETag)
+          }
+        }
+        activeUploadRef.current = { uploadId, fileKey }
+        setBookStatusText(`Resuming multipart upload: ${completedPartsMap.size} of ${totalParts} chunks already uploaded...`)
+      } else {
+        setBookProgress(6)
+        setBookStatusText('Initiating Cloudflare R2 multipart upload session...')
+
+        const initRes = await fetch('/api/admin/ebooks/upload/initiate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: cleanTitle,
+            author: cleanAuthor,
+            fileName: pdfFile.name,
+            fileSize: pdfFile.size,
+            contentType: 'application/pdf',
+            description: bookDescription.trim() || undefined,
+          }),
+          signal: abortController.signal,
+        })
+
+        const { ok: initOk, data: initData, error: initError, field: initField } = await safeFetchJson(initRes)
+        if (!initOk || !initData?.uploadId || !initData?.fileKey) {
+          if (initField) {
+            const fKey = initField === 'fileName' || initField === 'fileSize' ? 'pdf' : initField
+            setBookFieldErrors({ [fKey]: initError || 'Invalid field' })
+            setBookMessage("We couldn't upload this eBook. Please check the highlighted fields and try again.")
+          } else {
+            setBookMessage(`Error: ${initError || 'Failed to initiate Cloudflare R2 multipart upload.'}`)
+          }
+          return
+        }
+
+        uploadId = initData.uploadId
+        fileKey = initData.fileKey
+        partSize = initData.partSize || DEFAULT_PART_SIZE_BYTES
+        totalParts = initData.totalParts || Math.ceil(pdfFile.size / partSize)
+        activeUploadRef.current = { uploadId, fileKey }
+
+        try {
+          localStorage.setItem(
+            sessionKey,
+            JSON.stringify({ uploadId, fileKey, partSize, totalParts, completedParts: [] })
+          )
+        } catch {}
+      }
+
+      setBookChunkStats({ completed: completedPartsMap.size, total: totalParts })
+
+      // Determine which parts still need uploading
+      const pendingPartNumbers: number[] = []
+      for (let p = 1; p <= totalParts; p++) {
+        if (!completedPartsMap.has(p)) {
+          pendingPartNumbers.push(p)
+        }
+      }
+
+      // Batch sign presigned URLs for pending parts
+      setBookProgress(10)
+      setBookStatusText(`Signing upload chunks for Cloudflare R2 (${pendingPartNumbers.length} chunks)...`)
+
+      const signedPartsMap = new Map<number, string>()
+      for (let i = 0; i < pendingPartNumbers.length; i += 40) {
+        if (abortController.signal.aborted) throw new Error(isPausedRef.current ? 'Upload paused' : 'Upload cancelled')
+        const batch = pendingPartNumbers.slice(i, i + 40)
+        const signRes = await fetch('/api/admin/ebooks/upload/sign-part', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uploadId, fileKey, partNumbers: batch }),
           signal: abortController.signal,
         })
         const { ok: signOk, data: signData, error: signError } = await safeFetchJson(signRes)
@@ -1450,19 +1720,38 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
         }
       }
 
-      // 4. Upload chunks directly from browser to Cloudflare R2 with concurrency = 2
-      const completedParts: { PartNumber: number; ETag: string }[] = []
-      let uploadedBytes = 0
+      // Upload pending chunks directly to Cloudflare R2 using a 3-worker concurrency queue
       const totalBytes = pdfFile.size
-      const concurrency = Math.min(2, totalParts)
-      let nextIndex = 0
+      let uploadedBytes = Array.from(completedPartsMap.keys()).reduce((acc, pNum) => {
+        const start = (pNum - 1) * partSize
+        const end = Math.min(start + partSize, totalBytes)
+        return acc + (end - start)
+      }, 0)
+
+      const concurrency = Math.min(MAX_PARALLEL_CHUNKS, pendingPartNumbers.length)
+      let pendingIndex = 0
+      const startTime = Date.now()
+
+      const saveProgress = () => {
+        try {
+          const completedList = Array.from(completedPartsMap.entries()).map(([PartNumber, ETag]) => ({
+            PartNumber,
+            ETag,
+          }))
+          localStorage.setItem(
+            sessionKey,
+            JSON.stringify({ uploadId, fileKey, partSize, totalParts, completedParts: completedList })
+          )
+        } catch {}
+      }
 
       const uploadWorker = async () => {
-        while (nextIndex < totalParts) {
-          if (abortController.signal.aborted) throw new Error('Upload cancelled')
-          const currentIndex = nextIndex++
-          const partNumber = currentIndex + 1
-          const start = currentIndex * partSize
+        while (pendingIndex < pendingPartNumbers.length) {
+          if (abortController.signal.aborted) {
+            throw new Error(isPausedRef.current ? 'Upload paused' : 'Upload cancelled')
+          }
+          const partNumber = pendingPartNumbers[pendingIndex++]
+          const start = (partNumber - 1) * partSize
           const end = Math.min(start + partSize, totalBytes)
           const chunkBlob = pdfFile.slice(start, end)
           const chunkSize = end - start
@@ -1472,83 +1761,98 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
             throw new Error(`Missing presigned URL for part ${partNumber}`)
           }
 
-          setBookStatusText(
-            `Uploading chunk ${partNumber} of ${totalParts} (${((uploadedBytes / totalBytes) * 100).toFixed(0)}%)...`
-          )
-
+          let attempt = 0
           let etag: string | null = null
-          let directSuccess = false
 
-          // Attempt 1: Direct browser-to-R2 upload via presigned URL
-          try {
-            const chunkRes = await fetch(presignedUrl, {
-              method: 'PUT',
-              body: chunkBlob,
-              signal: abortController.signal,
-            })
+          while (attempt < MAX_CHUNK_RETRIES && !etag) {
+            if (abortController.signal.aborted) {
+              throw new Error(isPausedRef.current ? 'Upload paused' : 'Upload cancelled')
+            }
+            try {
+              attempt++
+              const chunkRes = await fetch(presignedUrl, {
+                method: 'PUT',
+                body: chunkBlob,
+                signal: abortController.signal,
+              })
 
-            if (chunkRes.ok) {
-              etag = chunkRes.headers.get('ETag') || chunkRes.headers.get('etag')
-              if (etag) {
-                directSuccess = true
+              if (chunkRes.ok) {
+                const rawEtag = chunkRes.headers.get('ETag') || chunkRes.headers.get('etag')
+                if (rawEtag) {
+                  etag = rawEtag.replace(/"/g, '')
+                } else {
+                  throw new Error(`R2 completed part ${partNumber} but returned no ETag header.`)
+                }
+              } else {
+                throw new Error(`Cloudflare R2 returned HTTP ${chunkRes.status} for part ${partNumber}`)
               }
+            } catch (err: unknown) {
+              if (abortController.signal.aborted) {
+                throw new Error(isPausedRef.current ? 'Upload paused' : 'Upload cancelled')
+              }
+              const errStr = String(err)
+              if (errStr.includes('Failed to fetch') || errStr.includes('NetworkError') || errStr.includes('CORS')) {
+                setBookCorsError(true)
+              }
+              if (attempt >= MAX_CHUNK_RETRIES) {
+                throw new Error(
+                  `Chunk ${partNumber} failed after ${MAX_CHUNK_RETRIES} attempts (${err instanceof Error ? err.message : 'Network error'}).`
+                )
+              }
+              // Exponential backoff delay
+              await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt - 1)))
             }
-          } catch (netErr: unknown) {
-            if (abortController.signal.aborted) throw new Error('Upload cancelled')
-            console.warn(`Direct R2 upload for chunk ${partNumber} failed (likely CORS preflight). Using server-side chunk stream fallback:`, netErr)
-          }
-
-          // Attempt 2: Resilient fallback via server chunk proxy if R2 CORS is not configured
-          if (!directSuccess || !etag) {
-            setBookStatusText(
-              `Streaming chunk ${partNumber} of ${totalParts} to R2 (${((uploadedBytes / totalBytes) * 100).toFixed(0)}%)...`
-            )
-            const fallbackUrl = `/api/admin/ebooks/upload/chunk?uploadId=${encodeURIComponent(uploadId)}&fileKey=${encodeURIComponent(fileKey)}&partNumber=${partNumber}`
-
-            const fallbackRes = await fetch(fallbackUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/octet-stream',
-              },
-              body: chunkBlob,
-              signal: abortController.signal,
-            })
-
-            const { ok: fbOk, data: fbData, error: fbError } = await safeFetchJson(fallbackRes)
-            if (!fbOk || !fbData?.etag) {
-              throw new Error(
-                fbError ||
-                `Failed to upload chunk ${partNumber} to Cloudflare R2 (HTTP ${fallbackRes.status})`
-              )
-            }
-            etag = fbData.etag
           }
 
           if (!etag) {
             throw new Error(`Cloudflare R2 ETag missing for chunk ${partNumber}`)
           }
 
-          completedParts.push({ PartNumber: partNumber, ETag: etag })
+          completedPartsMap.set(partNumber, etag)
           uploadedBytes += chunkSize
+          saveProgress()
+
+          const completedCount = completedPartsMap.size
+          setBookChunkStats({ completed: completedCount, total: totalParts })
+
+          const elapsedSec = (Date.now() - startTime) / 1000
+          const bytesPerSec = elapsedSec > 0 ? uploadedBytes / elapsedSec : 0
+          const speedMB = (bytesPerSec / (1024 * 1024)).toFixed(1)
+          const remainingBytes = totalBytes - uploadedBytes
+          const etaSec = bytesPerSec > 0 ? Math.ceil(remainingBytes / bytesPerSec) : 0
+          const etaStr = etaSec > 60 ? `${Math.ceil(etaSec / 60)}m remaining` : `${etaSec}s remaining`
+
           const progressPercent = Math.min(90, Math.round((uploadedBytes / totalBytes) * 80) + 10)
           setBookProgress(progressPercent)
+          setBookSpeedText(`${speedMB} MB/s`)
+          setBookEtaText(etaStr)
+          setBookStatusText(
+            `Uploading chunk ${completedCount} of ${totalParts} (${(uploadedBytes / (1024 * 1024)).toFixed(1)} / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB) · ${speedMB} MB/s · ${etaStr}`
+          )
         }
       }
 
-      const workers = Array.from({ length: concurrency }, () => uploadWorker())
-      await Promise.all(workers)
+      if (pendingPartNumbers.length > 0) {
+        const workers = Array.from({ length: concurrency }, () => uploadWorker())
+        await Promise.all(workers)
+      }
 
       setBookProgress(93)
-      setBookStatusText('Finalizing multipart upload in Cloudflare R2...')
+      setBookStatusText('Finalizing multipart upload in Cloudflare R2 & Database...')
 
       // 5. Complete multipart upload in R2 and save metadata in Supabase
+      const finalParts = Array.from(completedPartsMap.entries())
+        .map(([PartNumber, ETag]) => ({ PartNumber, ETag }))
+        .sort((a, b) => a.PartNumber - b.PartNumber)
+
       const compRes = await fetch('/api/admin/ebooks/upload/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          strategy: 'multipart',
           uploadId,
           fileKey,
-          parts: completedParts,
+          parts: finalParts,
           title: cleanTitle,
           subtitle: bookSubtitle.trim() || null,
           author: cleanAuthor,
@@ -1584,6 +1888,11 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
         return
       }
 
+      // Cleanup session cache
+      try {
+        localStorage.removeItem(sessionKey)
+      } catch {}
+
       activeUploadRef.current = null
       setBookProgress(100)
       setBookStatusText('Upload completed!')
@@ -1606,9 +1915,15 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
       setCoverImageFile(null)
       setCoverPreview(null)
       setAcademicMappings([])
+      setBookSpeedText('')
+      setBookEtaText('')
+      setBookChunkStats(null)
       loadContent()
     } catch (err: unknown) {
-      if (abortController.signal.aborted) {
+      if (isPausedRef.current) {
+        setBookStatusText('Upload paused. Click Resume to continue.')
+        setBookMessage('eBook upload is paused.')
+      } else if (abortController.signal.aborted) {
         setBookMessage('eBook upload was cancelled.')
       } else {
         const errorMsg = err instanceof Error ? err.message : 'eBook upload failed'
@@ -1619,8 +1934,10 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
         }
       }
     } finally {
-      setBookUploading(false)
-      bookAbortControllerRef.current = null
+      if (!isPausedRef.current) {
+        setBookUploading(false)
+        bookAbortControllerRef.current = null
+      }
     }
   }
 
@@ -2476,21 +2793,45 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' }}>
               <div style={{ background: 'var(--bg-secondary)', padding: '0.75rem', borderRadius: 'var(--radius-sm)' }}>
                 <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>EMAIL ADDRESS</div>
-                <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginTop: 3, wordBreak: 'break-all' }}>
-                  {selectedUserDetail.email || 'Not available'}
+                <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginTop: 3, wordBreak: 'break-all', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span>{selectedUserDetail.email || 'Not available'}</span>
+                  {selectedUserDetail.auth_provider === 'google' && (
+                    <span
+                      style={{
+                        fontSize: '0.625rem',
+                        padding: '2px 6px',
+                        borderRadius: 4,
+                        background: 'rgba(66, 133, 244, 0.15)',
+                        color: '#4285F4',
+                        fontWeight: 700,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 3,
+                      }}
+                    >
+                      Google
+                    </span>
+                  )}
                 </div>
               </div>
 
               <div style={{ background: 'var(--bg-secondary)', padding: '0.75rem', borderRadius: 'var(--radius-sm)' }}>
                 <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>MOBILE NUMBER (MANDATORY)</div>
-                <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginTop: 3 }}>
+                <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginTop: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
                   {selectedUserDetail.mobile_number ? (
-                    <a
-                      href={`tel:${selectedUserDetail.mobile_number}`}
-                      style={{ color: '#10b981', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                    >
-                      <Phone size={13} /> {selectedUserDetail.mobile_number}
-                    </a>
+                    <>
+                      <a
+                        href={`tel:${selectedUserDetail.mobile_number}`}
+                        style={{ color: '#10b981', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                      >
+                        <Phone size={13} /> {selectedUserDetail.mobile_number}
+                      </a>
+                      <span style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', fontWeight: 500 }}>
+                        {selectedUserDetail.phone_confirmed_at
+                          ? 'SMS Verified Phone Identity'
+                          : 'Profile Contact Info (Not SMS verified)'}
+                      </span>
+                    </>
                   ) : (
                     <span style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>Not registered (Legacy account)</span>
                   )}
@@ -2526,23 +2867,53 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
 
               <div style={{ background: 'var(--bg-secondary)', padding: '0.75rem', borderRadius: 'var(--radius-sm)' }}>
                 <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>LAST SIGN-IN / ACTIVE</div>
-                <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginTop: 3 }}>
-                  {selectedUserDetail.last_sign_in_at
-                    ? new Date(selectedUserDetail.last_sign_in_at).toLocaleString('en-IN', {
-                      day: 'numeric',
-                      month: 'short',
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })
-                    : 'No session timestamp recorded'}
+                <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginTop: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {selectedUserDetail.last_sign_in_at ? (
+                    <>
+                      <span>
+                        {new Date(selectedUserDetail.last_sign_in_at).toLocaleString('en-IN', {
+                          day: 'numeric',
+                          month: 'short',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                      <span style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', fontWeight: 500 }}>
+                        Supabase Auth session timestamp
+                      </span>
+                    </>
+                  ) : (
+                    <span style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}>No session timestamp recorded</span>
+                  )}
                 </div>
               </div>
 
               <div style={{ background: 'var(--bg-secondary)', padding: '0.75rem', borderRadius: 'var(--radius-sm)' }}>
                 <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', fontWeight: 600 }}>EMAIL VERIFICATION</div>
-                <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginTop: 3 }}>
-                  {selectedUserDetail.email_confirmed_at ? 'Verified' : 'Not verified'}
+                <div style={{ fontSize: '0.8125rem', fontWeight: 600, marginTop: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {selectedUserDetail.email_confirmed_at || selectedUserDetail.email_verified ? (
+                    <>
+                      <span style={{ color: '#10b981', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <CheckCircle2 size={13} /> Verified (Supabase Auth)
+                      </span>
+                      {selectedUserDetail.email_confirmed_at && (
+                        <span style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', fontWeight: 500 }}>
+                          Confirmed: {new Date(selectedUserDetail.email_confirmed_at).toLocaleString('en-IN', {
+                            day: 'numeric',
+                            month: 'short',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span style={{ color: '#f59e0b', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <AlertCircle size={13} /> Not verified (Pending confirmation)
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -2977,9 +3348,65 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
               <span className="badge badge-yellow" style={{ fontSize: '0.6875rem' }}>🖼 Thumbnail + PDF</span>
-              <span className="badge badge-indigo" style={{ fontSize: '0.6875rem' }}>⚡ Up to 50 MB</span>
+              <span className="badge badge-indigo" style={{ fontSize: '0.6875rem' }}>⚡ Up to 500 MB (Direct R2)</span>
             </div>
           </div>
+
+          {bookCorsError && (
+            <div
+              style={{
+                margin: '0 0 1.25rem 0',
+                padding: '1.25rem',
+                background: 'rgba(239, 68, 68, 0.08)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                borderRadius: 'var(--radius-md)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#ef4444', fontWeight: 700, fontSize: '0.9375rem', marginBottom: 6 }}>
+                <AlertTriangle size={18} /> Cloudflare R2 CORS Configuration Required
+              </div>
+              <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 8 }}>
+                Direct browser-to-R2 upload requires Cross-Origin Resource Sharing (CORS) to be enabled on your Cloudflare R2 bucket <code>ebookslib</code>.
+              </p>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginBottom: 8 }}>
+                <strong>Configuration Steps:</strong> Cloudflare Dashboard → R2 → <code>ebookslib</code> → Settings → CORS Policy → Add CORS Policy:
+              </p>
+              <div style={{ position: 'relative' }}>
+                <pre
+                  style={{
+                    background: 'var(--bg-secondary)',
+                    padding: '0.75rem',
+                    borderRadius: 6,
+                    fontSize: '0.75rem',
+                    overflowX: 'auto',
+                    fontFamily: 'monospace',
+                    border: '1px solid var(--border-medium)',
+                  }}
+                >
+{`[
+  {
+    "AllowedOrigins": ["*"],
+    "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag", "Content-Range", "Accept-Ranges", "Content-Length"],
+    "MaxAgeSeconds": 3600
+  }
+]`}
+                </pre>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(`[\n  {\n    "AllowedOrigins": ["*"],\n    "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],\n    "AllowedHeaders": ["*"],\n    "ExposeHeaders": ["ETag", "Content-Range", "Accept-Ranges", "Content-Length"],\n    "MaxAgeSeconds": 3600\n  }\n]`)
+                    alert('CORS configuration copied to clipboard!')
+                  }}
+                  className="btn btn-secondary"
+                  style={{ position: 'absolute', top: 8, right: 8, fontSize: '0.6875rem', padding: '4px 8px' }}
+                >
+                  <Copy size={12} /> Copy CORS JSON
+                </button>
+              </div>
+            </div>
+          )}
 
           {bookMessage && (
             <div style={{
@@ -3230,7 +3657,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     <BookOpen size={14} color="#10b981" /> eBook PDF File (Cloudflare R2 Direct) *
                   </span>
-                  <span style={{ fontSize: '0.6875rem', color: '#10b981', fontWeight: 600 }}>Supports 145 MB+ (Max 500 MB)</span>
+                  <span style={{ fontSize: '0.6875rem', color: '#10b981', fontWeight: 600 }}>Supports up to 500 MB (Multipart &gt; 100 MB)</span>
                 </label>
                 <div
                   style={{
@@ -3270,7 +3697,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                     <div>
                       <div style={{ fontWeight: 700, fontSize: '0.875rem', color: '#10b981' }}>{bookPdfFile.name}</div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: 4 }}>
-                        {(bookPdfFile.size / (1024 * 1024)).toFixed(2)} MB · Attached for Direct R2 Multipart Upload
+                        {(bookPdfFile.size / (1024 * 1024)).toFixed(2)} MB · Attached for Direct Cloudflare R2 Upload
                       </div>
                     </div>
                   ) : (
@@ -3279,7 +3706,7 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                         Choose eBook PDF file
                       </div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-                        Complete textbook or monograph (Target: 145 MB+ supported)
+                        Complete textbook or monograph (Up to 500 MB supported)
                       </div>
                     </div>
                   )}
@@ -3292,23 +3719,48 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
               </div>
             </div>
 
-            {/* Upload Progress Bar and Cancellation */}
+            {/* Upload Progress Bar, Status, and Controls */}
             {bookUploading && (
               <div
                 style={{
                   margin: '1.25rem 0',
-                  padding: '1rem',
+                  padding: '1.25rem',
                   background: 'rgba(16, 185, 129, 0.05)',
-                  border: '1px solid rgba(16, 185, 129, 0.2)',
+                  border: '1px solid rgba(16, 185, 129, 0.25)',
                   borderRadius: 'var(--radius-md)',
                 }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8125rem', marginBottom: 6 }}>
-                  <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.8125rem', marginBottom: 8 }}>
+                  <span style={{ fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {bookIsPaused ? <Pause size={14} color="#f59e0b" /> : <Loader2 size={14} className="animate-spin" color="#10b981" />}
                     {bookStatusText || 'Uploading directly to Cloudflare R2...'}
                   </span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ fontWeight: 700, color: '#10b981' }}>{bookProgress}%</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontWeight: 700, color: '#10b981', fontSize: '0.875rem' }}>{bookProgress}%</span>
+
+                    {/* Pause / Resume Button */}
+                    <button
+                      type="button"
+                      onClick={handleTogglePauseBookUpload}
+                      style={{
+                        background: bookIsPaused ? 'rgba(245, 158, 11, 0.15)' : 'var(--bg-secondary)',
+                        border: '1px solid var(--border-medium)',
+                        color: bookIsPaused ? '#f59e0b' : 'var(--text-primary)',
+                        padding: '4px 10px',
+                        borderRadius: 6,
+                        fontSize: '0.6875rem',
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                      }}
+                    >
+                      {bookIsPaused ? <Play size={12} /> : <Pause size={12} />}
+                      {bookIsPaused ? 'Resume' : 'Pause'}
+                    </button>
+
+                    {/* Cancel Button */}
                     <button
                       type="button"
                       onClick={handleCancelBookUpload}
@@ -3316,31 +3768,47 @@ export function AdminClient({ stats, recentUsers, recentAudit, recentBooks = [] 
                         background: 'transparent',
                         border: '1px solid #ef4444',
                         color: '#ef4444',
-                        padding: '2px 8px',
-                        borderRadius: 4,
+                        padding: '4px 10px',
+                        borderRadius: 6,
                         fontSize: '0.6875rem',
+                        fontWeight: 600,
                         cursor: 'pointer',
                         display: 'flex',
                         alignItems: 'center',
                         gap: 4,
                       }}
                     >
-                      <XCircle size={12} /> Cancel Upload
+                      <XCircle size={12} /> Cancel
                     </button>
                   </div>
                 </div>
+
+                {/* Progress track */}
                 <div style={{ height: 8, background: 'var(--bg-secondary)', borderRadius: 4, overflow: 'hidden' }}>
                   <div
                     style={{
                       height: '100%',
                       width: `${bookProgress}%`,
-                      background: 'linear-gradient(90deg, #f59e0b, #10b981)',
+                      background: bookIsPaused
+                        ? '#f59e0b'
+                        : 'linear-gradient(90deg, #f59e0b, #10b981)',
                       transition: 'width 250ms ease',
                     }}
                   />
                 </div>
-                <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)', marginTop: 6 }}>
-                  Direct browser-to-R2 upload in progress. Please do not close this page.
+
+                {/* Metrics Row */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.6875rem', color: 'var(--text-tertiary)', marginTop: 8, flexWrap: 'wrap', gap: 6 }}>
+                  <div>
+                    {bookChunkStats ? (
+                      <span>Chunk {bookChunkStats.completed} of {bookChunkStats.total} · </span>
+                    ) : null}
+                    <span>Direct browser-to-R2 upload (Bypassing Vercel proxy · Zero FUNCTION_PAYLOAD_TOO_LARGE)</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 12 }}>
+                    {bookSpeedText && <span>Speed: <strong>{bookSpeedText}</strong></span>}
+                    {bookEtaText && <span>ETA: <strong>{bookEtaText}</strong></span>}
+                  </div>
                 </div>
               </div>
             )}

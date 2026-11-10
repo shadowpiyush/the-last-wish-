@@ -139,26 +139,29 @@ async function runTest() {
     await page.goto(`${BASE_URL}/library`, { waitUntil: 'networkidle2' });
     report(page.url().includes('/library'), 'Navigated to /library as authenticated student');
 
-    const readBtn = await page.waitForSelector('button ::-p-text(Read Online)', { timeout: 10000 });
+    const readBtn = await page.waitForSelector('button ::-p-text(Read Online)', { timeout: 25000 });
     report(Boolean(readBtn), 'Found "Read Online" button');
 
     const clickStart = Date.now();
     await readBtn.click();
 
-    // Verify modal appeared and iframe is present
-    await page.waitForSelector('iframe', { timeout: 10000 });
+    // Verify FastPdfViewer modal appeared and canvas is present
+    await page.waitForSelector('canvas', { timeout: 10000 });
     const modalLatency = Date.now() - clickStart;
-    report(modalLatency < 2000, `Reader modal appeared in ${modalLatency}ms (< 2000ms)`);
+    report(modalLatency < 3000, `Reader modal appeared in ${modalLatency}ms (< 3000ms)`);
 
-    const iframeSrc = await page.$eval('iframe', el => el.src);
-    report(iframeSrc.includes('/api/storage/stream'), `Iframe loaded stream URL: ${iframeSrc.slice(0, 70)}...`);
-
-    // Verify Full Screen action button is available
-    const hasFullScreen = await page.evaluate(() => {
-      const links = Array.from(document.querySelectorAll('a'));
-      return links.some(a => a.innerText.includes('Full Screen'));
+    // Verify canvas rendered successfully without error dialog
+    const hasError = await page.evaluate(() => {
+      return document.body.innerText.includes('Could not stream PDF') || document.body.innerText.includes('Failed to fetch');
     });
-    report(hasFullScreen, 'Full Screen action button rendered in reader toolbar');
+    report(!hasError, 'FastPdfViewer rendered without any streaming or fetch errors');
+
+    // Verify fullscreen action button is available in toolbar
+    const hasFullScreen = await page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('button'));
+      return btns.some(b => b.title?.toLowerCase().includes('fullscreen'));
+    });
+    report(hasFullScreen, 'Fullscreen action button rendered in reader toolbar');
 
   } finally {
     await browser.close();

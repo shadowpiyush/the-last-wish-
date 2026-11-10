@@ -115,10 +115,10 @@ export async function POST(request: Request) {
     const validYear = Math.min(Math.max(Number(currentYear) || 1, 1), maxYears)
     const validSemester = Math.min(Math.max(Number(currentSemester) || 1, 1), maxSemesters)
 
-    // 8. Check existing profile to preserve role
+    // 8. Check existing profile to preserve role and existing authoritative timestamps
     const { data: existingProfile } = await supabaseAdmin
       .from('profiles')
-      .select('role')
+      .select('role, email, email_confirmed_at, last_login_at')
       .eq('id', user.id)
       .maybeSingle()
 
@@ -126,11 +126,21 @@ export async function POST(request: Request) {
 
     // 9. Atomic Upsert into public.profiles
     const nowIso = new Date().toISOString()
+    const authoritativeEmail = user.email || existingProfile?.email || null
+    const authoritativeConfirmedAt =
+      user.email_confirmed_at ||
+      (user as { confirmed_at?: string }).confirmed_at ||
+      existingProfile?.email_confirmed_at ||
+      null
+    const authoritativeLastSignIn = user.last_sign_in_at || existingProfile?.last_login_at || nowIso
+
     const { data: savedProfile, error: upsertError } = await supabaseAdmin
       .from('profiles')
       .upsert({
         id: user.id,
         full_name: cleanName,
+        email: authoritativeEmail,
+        email_confirmed_at: authoritativeConfirmedAt,
         mobile_number: normalizedMobile,
         program_id: program.id,
         branch_id: branch.id,
@@ -138,6 +148,7 @@ export async function POST(request: Request) {
         current_semester: validSemester,
         role,
         status: 'active',
+        last_login_at: authoritativeLastSignIn,
         updated_at: nowIso,
       })
       .select(`

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { verifyAdmin } from '@/lib/auth/admin'
 import { getR2Client, getR2Config } from '@/lib/r2/client'
-import { CompleteMultipartUploadCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import { CompleteMultipartUploadCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
 import { createClient as createAdminSupabase } from '@supabase/supabase-js'
 import { validateEbookMetadata, validateAcademicMappings, isValidUuid } from '@/lib/validation/ebook'
 
@@ -40,6 +40,7 @@ export async function POST(request: Request) {
     }
 
     const {
+      strategy = 'multipart',
       uploadId,
       fileKey,
       parts,
@@ -57,13 +58,6 @@ export async function POST(request: Request) {
       mappings = [],
     } = body
 
-    if (!uploadId || typeof uploadId !== 'string' || !uploadId.trim()) {
-      return NextResponse.json(
-        { error: 'uploadId is required.', code: 'INVALID_METADATA', field: 'uploadId' },
-        { status: 400 }
-      )
-    }
-
     if (!fileKey || typeof fileKey !== 'string' || !fileKey.trim() || !fileKey.startsWith('ebooks/')) {
       return NextResponse.json(
         { error: 'A valid fileKey starting with ebooks/ is required.', code: 'INVALID_METADATA', field: 'fileKey' },
@@ -71,11 +65,20 @@ export async function POST(request: Request) {
       )
     }
 
-    if (!Array.isArray(parts) || parts.length === 0) {
-      return NextResponse.json(
-        { error: 'At least one uploaded part is required to complete upload.', code: 'INVALID_CHUNK_PARAMETERS' },
-        { status: 400 }
-      )
+    if (strategy === 'multipart') {
+      if (!uploadId || typeof uploadId !== 'string' || !uploadId.trim()) {
+        return NextResponse.json(
+          { error: 'uploadId is required for multipart completion.', code: 'INVALID_METADATA', field: 'uploadId' },
+          { status: 400 }
+        )
+      }
+
+      if (!Array.isArray(parts) || parts.length === 0) {
+        return NextResponse.json(
+          { error: 'At least one uploaded part is required to complete multipart upload.', code: 'INVALID_CHUNK_PARAMETERS' },
+          { status: 400 }
+        )
+      }
     }
 
     // Validate metadata using shared schema
@@ -120,43 +123,64 @@ export async function POST(request: Request) {
     }
 
     const r2Client = getR2Client()
+    let finalFileSize = typeof fileSize === 'number' ? fileSize : 0
 
-    // 3. Complete multipart upload in Cloudflare R2
-    const sortedParts = [...parts]
-      .sort((a, b) => Number(a.PartNumber || a.partNumber) - Number(b.PartNumber || b.partNumber))
-      .map((p) => {
-        const rawEtag = String(p.ETag || p.etag || '').trim()
-        const etag = rawEtag.startsWith('"') ? rawEtag : `"${rawEtag}"`
-        return {
-          PartNumber: Number(p.PartNumber || p.partNumber),
-          ETag: etag,
-        }
+    // 3. Complete multipart upload in Cloudflare R2 if using multipart strategy
+    if (strategy === 'multipart') {
+      const sortedParts = [...(parts as Record<string, unknown>[])]
+        .sort((a, b) => Number(a.PartNumber || a.partNumber) - Number(b.PartNumber || b.partNumber))
+        .map((p) => {
+          const rawEtag = String(p.ETag || p.etag || '').trim()
+          const etag = rawEtag.startsWith('"') ? rawEtag : `"${rawEtag}"`
+          return {
+            PartNumber: Number(p.PartNumber || p.partNumber),
+            ETag: etag,
+          }
+        })
+
+      const completeCommand = new CompleteMultipartUploadCommand({
+        Bucket: bucketName,
+        Key: fileKey,
+        UploadId: uploadId as string,
+        MultipartUpload: {
+          Parts: sortedParts,
+        },
       })
 
-    const completeCommand = new CompleteMultipartUploadCommand({
-      Bucket: bucketName,
-      Key: fileKey,
-      UploadId: uploadId,
-      MultipartUpload: {
-        Parts: sortedParts,
-      },
-    })
+      try {
+        await r2Client.send(completeCommand)
+        fileKeyToDeleteOnFailure = fileKey // Track for cleanup if database fails
+      } catch (r2Err) {
+        console.error('R2 complete upload failed:', r2Err)
+        return NextResponse.json(
+          {
+            error: r2Err instanceof Error ? r2Err.message : 'Failed to finalize multipart upload in Cloudflare R2.',
+            code: 'STORAGE_UPLOAD_FAILED',
+          },
+          { status: 500 }
+        )
+      }
+    }
 
+    // 4. Verify completed R2 object exists and has non-zero size
     try {
-      await r2Client.send(completeCommand)
-      fileKeyToDeleteOnFailure = fileKey // Track for cleanup if database fails
-    } catch (r2Err) {
-      console.error('R2 complete upload failed:', r2Err)
+      const head = await r2Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: fileKey }))
+      if (head.ContentLength !== undefined && head.ContentLength > 0) {
+        finalFileSize = head.ContentLength
+      }
+      fileKeyToDeleteOnFailure = fileKey
+    } catch (headErr) {
+      console.error('R2 object verification failed:', headErr)
       return NextResponse.json(
         {
-          error: r2Err instanceof Error ? r2Err.message : 'Failed to finalize multipart upload in Cloudflare R2.',
-          code: 'STORAGE_UPLOAD_FAILED',
+          error: 'Uploaded eBook was not verified in Cloudflare R2 storage.',
+          code: 'VERIFICATION_FAILED',
         },
-        { status: 500 }
+        { status: 404 }
       )
     }
 
-    // 4. Connect to Supabase via Service Role for atomic persistence
+    // 5. Connect to Supabase via Service Role for atomic persistence
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
 

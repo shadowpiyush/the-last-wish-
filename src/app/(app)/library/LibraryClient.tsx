@@ -93,7 +93,7 @@ export function LibraryClient({ initialBooks, programs = [], branches = [] }: Li
   const [selectedBranch, setSelectedBranch] = useState<string>('all')
   const [selectedSemester, setSelectedSemester] = useState<string>('all')
   const [readingLoading, setReadingLoading] = useState<string | null>(null)
-  const [activeReadingBook, setActiveReadingBook] = useState<{ book: BookItem; url: string } | null>(null)
+  const [activeReadingBook, setActiveReadingBook] = useState<{ book: BookItem; url: string; streamUrl?: string } | null>(null)
   const [readerIframeLoading, setReaderIframeLoading] = useState(true)
 
   // Prevent download and print keyboard shortcuts while reader is open
@@ -178,8 +178,13 @@ export function LibraryClient({ initialBooks, programs = [], branches = [] }: Li
     try {
       const res = await fetch(`/api/storage/view-url?bucket=ebooks&path=${encodeURIComponent(book.ebook_file_path)}`)
       const data = await res.json()
-      if (data.directUrl || data.url) {
-        setActiveReadingBook({ book, url: data.directUrl || data.url })
+      const targetUrl = data.url || data.streamUrl || data.directUrl
+      if (targetUrl) {
+        setActiveReadingBook({
+          book,
+          url: targetUrl,
+          streamUrl: data.streamUrl,
+        })
       } else {
         alert(data.error || 'Failed to open eBook')
       }
@@ -559,8 +564,20 @@ export function LibraryClient({ initialBooks, programs = [], branches = [] }: Li
       {activeReadingBook && (
         <FastPdfViewer
           url={activeReadingBook.url}
+          streamUrl={activeReadingBook.streamUrl}
           title={activeReadingBook.book.title}
           onClose={() => setActiveReadingBook(null)}
+          onRefreshUrl={async () => {
+            try {
+              const res = await fetch(
+                `/api/storage/view-url?bucket=ebooks&path=${encodeURIComponent(activeReadingBook.book.ebook_file_path!)}`
+              )
+              const data = await res.json()
+              return data.url || data.streamUrl || data.directUrl || null
+            } catch {
+              return null
+            }
+          }}
         />
       )}
     </div>

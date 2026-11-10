@@ -1,10 +1,16 @@
 import { NextResponse } from 'next/server'
 import { verifyAdmin } from '@/lib/auth/admin'
 import { getR2Client, getR2Config } from '@/lib/r2/client'
-import { CreateMultipartUploadCommand } from '@aws-sdk/client-s3'
+import { CreateMultipartUploadCommand, PutObjectCommand } from '@aws-sdk/client-s3'
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import crypto from 'crypto'
-
-const MAX_EBOOK_FILE_SIZE = 500 * 1024 * 1024 // 500 MB
+import {
+  MAX_EBOOK_FILE_SIZE_BYTES,
+  MAX_EBOOK_PDF_SIZE_MB,
+  MULTIPART_THRESHOLD_BYTES,
+  DEFAULT_PART_SIZE_BYTES,
+  PRESIGNED_URL_EXPIRES_IN_SECONDS,
+} from '@/lib/config/ebooks'
 
 export async function POST(request: Request) {
   try {
@@ -66,12 +72,13 @@ export async function POST(request: Request) {
       )
     }
 
-    if (fileSize > MAX_EBOOK_FILE_SIZE) {
+    if (fileSize > MAX_EBOOK_FILE_SIZE_BYTES) {
       return NextResponse.json(
         {
-          error: `File size (${(fileSize / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum allowed limit of ${(MAX_EBOOK_FILE_SIZE / (1024 * 1024)).toFixed(0)} MB.`,
+          error: `File size (${(fileSize / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum allowed limit of ${MAX_EBOOK_PDF_SIZE_MB} MB.`,
           code: 'FILE_TOO_LARGE',
           field: 'fileSize',
+          maxSizeMb: MAX_EBOOK_PDF_SIZE_MB,
         },
         { status: 400 }
       )
@@ -116,11 +123,43 @@ export async function POST(request: Request) {
     const fileUuid = crypto.randomUUID()
     const fileKey = `ebooks/${fileUuid}/${baseName}.pdf`
 
-    // 5. Calculate chunk size (10 MB is optimal for S3/R2 multipart up to 100 GB)
-    const partSize = 10 * 1024 * 1024 // 10 MB
+    // 5. Select strategy based on file size threshold:
+    // Files <= 100 MB use direct single PUT presigned URL.
+    // Files > 100 MB use R2 multipart upload with 16 MB parts.
+    const isMultipart = fileSize > MULTIPART_THRESHOLD_BYTES
+
+    if (!isMultipart) {
+      const putCommand = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: fileKey,
+        ContentType: 'application/pdf',
+        Metadata: {
+          title: encodeURIComponent(cleanTitle),
+          author: encodeURIComponent(cleanAuthor),
+          originalfilename: encodeURIComponent(fileName),
+          filesize: String(fileSize),
+          uploaderid: authCheck.user?.id || '',
+        },
+      })
+
+      const uploadUrl = await getSignedUrl(r2Client, putCommand, {
+        expiresIn: PRESIGNED_URL_EXPIRES_IN_SECONDS,
+      })
+
+      return NextResponse.json({
+        success: true,
+        strategy: 'single_put',
+        fileKey,
+        uploadUrl,
+        fileSize,
+        bucket: bucketName,
+      })
+    }
+
+    // 6. Multipart Upload configuration (16 MB parts)
+    const partSize = DEFAULT_PART_SIZE_BYTES
     const totalParts = Math.ceil(fileSize / partSize)
 
-    // 6. Initiate multipart upload in R2
     const command = new CreateMultipartUploadCommand({
       Bucket: bucketName,
       Key: fileKey,
@@ -145,6 +184,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
+      strategy: 'multipart',
       uploadId: res.UploadId,
       fileKey,
       partSize,

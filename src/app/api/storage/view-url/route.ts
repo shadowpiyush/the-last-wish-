@@ -87,9 +87,9 @@ export async function GET(request: Request) {
           const r2Url = await getSignedUrl(r2Client, command, { expiresIn: 3600 })
 
           const result: CachedSignedUrl = {
-            url: r2Url,
+            url: streamUrl,
             streamUrl,
-            directUrl: r2Url,
+            directUrl: streamUrl,
             provider: 'r2',
             expiresAt: Date.now() + 50 * 60 * 1000,
           }
@@ -97,9 +97,10 @@ export async function GET(request: Request) {
 
           return NextResponse.json({
             success: true,
-            url: r2Url,
+            url: streamUrl,
             streamUrl,
-            directUrl: r2Url,
+            directUrl: streamUrl,
+            r2DirectUrl: r2Url,
             provider: 'r2',
           })
         }

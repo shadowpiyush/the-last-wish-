@@ -1,132 +1,22 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { verifyAdmin } from '@/lib/auth/admin'
-import { getR2Client, getR2Config } from '@/lib/r2/client'
-import { UploadPartCommand } from '@aws-sdk/client-s3'
+import { NextResponse } from 'next/server'
 
 export const dynamic = 'force-dynamic'
 
 /**
- * Fallback chunk uploader route for Cloudflare R2 multipart uploads.
- * If the administrator's browser is blocked from direct R2 upload by CORS policy,
- * this endpoint proxies the individual chunk to R2 using server-side S3 credentials.
+ * DEPRECATED & DISABLED ENDPOINT
+ * 
+ * Proxying PDF binary chunks through Vercel Functions violates Vercel's strict 4.5 MB
+ * serverless payload limit (HTTP 413 FUNCTION_PAYLOAD_TOO_LARGE).
+ * 
+ * Cloudflare R2 uploads must always be performed directly from the client browser
+ * to Cloudflare R2 using presigned URLs (single PUT or multipart UploadPart).
  */
-export async function POST(request: NextRequest) {
-  try {
-    const authResult = await verifyAdmin(request)
-    if (!authResult.isAdmin) {
-      return NextResponse.json(
-        { error: authResult.error || 'Access denied', code: 'UNAUTHORIZED' },
-        { status: authResult.status }
-      )
-    }
-
-    const { searchParams } = new URL(request.url)
-    let uploadId = searchParams.get('uploadId') || request.headers.get('x-upload-id') || ''
-    let fileKey = searchParams.get('fileKey') || request.headers.get('x-file-key') || ''
-    let partNumberStr = searchParams.get('partNumber') || request.headers.get('x-part-number') || ''
-    let buffer: Buffer | null = null
-
-    const contentType = request.headers.get('content-type') || ''
-
-    if (contentType.includes('multipart/form-data')) {
-      try {
-        const formData = await request.formData()
-        uploadId = (formData.get('uploadId') as string) || uploadId
-        fileKey = (formData.get('fileKey') as string) || fileKey
-        partNumberStr = (formData.get('partNumber') as string) || partNumberStr
-        const chunkFile = formData.get('chunk') as Blob | null
-        if (chunkFile) {
-          buffer = Buffer.from(await chunkFile.arrayBuffer())
-        }
-      } catch (formErr) {
-        console.warn('FormData parse fallback note:', formErr)
-      }
-    }
-
-    // If buffer was not populated via FormData, read raw binary body
-    if (!buffer) {
-      const arrayBuf = await request.arrayBuffer()
-      if (arrayBuf.byteLength > 0) {
-        buffer = Buffer.from(arrayBuf)
-      }
-    }
-
-    if (!uploadId || !fileKey || !partNumberStr || !buffer || buffer.length === 0) {
-      return NextResponse.json(
-        {
-          error: 'Missing required parameters (uploadId, fileKey, partNumber) or chunk body payload.',
-          code: 'INVALID_METADATA',
-        },
-        { status: 400 }
-      )
-    }
-
-    if (!fileKey.startsWith('ebooks/')) {
-      return NextResponse.json(
-        { error: 'Invalid fileKey path. Must be under ebooks/ directory.', code: 'INVALID_METADATA' },
-        { status: 400 }
-      )
-    }
-
-    const partNumber = parseInt(partNumberStr, 10)
-    if (isNaN(partNumber) || partNumber < 1 || partNumber > 10000) {
-      return NextResponse.json(
-        { error: 'Invalid partNumber: must be an integer between 1 and 10000.', code: 'INVALID_CHUNK_PARAMETERS' },
-        { status: 400 }
-      )
-    }
-
-    // Validate PDF magic bytes on the first chunk
-    if (partNumber === 1 && buffer.length >= 5) {
-      const header = buffer.subarray(0, 5).toString('ascii')
-      if (!header.startsWith('%PDF-')) {
-        return NextResponse.json(
-          { error: 'Invalid file content: The uploaded file is not a valid PDF document.', code: 'INVALID_FILE_TYPE' },
-          { status: 400 }
-        )
-      }
-    }
-
-    const { bucketName, isConfigured } = getR2Config()
-    if (!isConfigured) {
-      return NextResponse.json(
-        { error: 'Cloudflare R2 is not configured.', code: 'STORAGE_CONFIGURATION_ERROR' },
-        { status: 503 }
-      )
-    }
-
-    const client = getR2Client()
-
-    const partResult = await client.send(
-      new UploadPartCommand({
-        Bucket: bucketName,
-        Key: fileKey,
-        UploadId: uploadId,
-        PartNumber: partNumber,
-        Body: buffer,
-      })
-    )
-
-    if (!partResult.ETag) {
-      return NextResponse.json(
-        { error: `Cloudflare R2 failed to return an ETag for part ${partNumber}`, code: 'STORAGE_UPLOAD_FAILED' },
-        { status: 500 }
-      )
-    }
-
-    return NextResponse.json({
-      success: true,
-      partNumber,
-      etag: partResult.ETag,
-    })
-  } catch (error: unknown) {
-    console.error('Error uploading chunk fallback to R2:', error)
-    return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : 'Failed to upload chunk to Cloudflare R2.',
-        code: 'STORAGE_UPLOAD_FAILED',
-      },
-      { status: 500 }
-    )
-  }
+export async function POST() {
+  return NextResponse.json(
+    {
+      error: 'Proxying eBook chunks through Vercel Functions is deprecated and disabled. Uploads must go directly to Cloudflare R2 via presigned URLs to prevent FUNCTION_PAYLOAD_TOO_LARGE (4.5 MB limit).',
+      code: 'DIRECT_R2_UPLOAD_REQUIRED',
+    },
+    { status: 410 }
+  )
 }

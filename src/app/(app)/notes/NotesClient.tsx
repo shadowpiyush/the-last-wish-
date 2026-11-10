@@ -188,7 +188,7 @@ export function NotesClient({
 
   // ──────────────── SECURE PDF READER MODAL ────────────────
   const [loadingNoteId, setLoadingNoteId] = useState<string | null>(null)
-  const [activeReadingNote, setActiveReadingNote] = useState<{ note: Note; url: string } | null>(null)
+  const [activeReadingNote, setActiveReadingNote] = useState<{ note: Note; url: string; streamUrl?: string } | null>(null)
 
   // Debounce universal search
   useEffect(() => {
@@ -333,8 +333,13 @@ export function NotesClient({
         `/api/storage/view-url?bucket=notes&path=${encodeURIComponent(note.file_path)}`
       )
       const data = await res.json()
-      if (data.directUrl || data.url) {
-        setActiveReadingNote({ note, url: data.directUrl || data.url })
+      const targetUrl = data.url || data.streamUrl || data.directUrl
+      if (targetUrl) {
+        setActiveReadingNote({
+          note,
+          url: targetUrl,
+          streamUrl: data.streamUrl,
+        })
       } else {
         alert(data.error || 'Failed to open note')
       }
@@ -1825,9 +1830,21 @@ export function NotesClient({
       {activeReadingNote && (
         <FastPdfViewer
           url={activeReadingNote.url}
+          streamUrl={activeReadingNote.streamUrl}
           title={activeReadingNote.note.title}
           fileSize={activeReadingNote.note.file_size}
           onClose={() => setActiveReadingNote(null)}
+          onRefreshUrl={async () => {
+            try {
+              const res = await fetch(
+                `/api/storage/view-url?bucket=notes&path=${encodeURIComponent(activeReadingNote.note.file_path!)}`
+              )
+              const data = await res.json()
+              return data.url || data.streamUrl || data.directUrl || null
+            } catch {
+              return null
+            }
+          }}
         />
       )}
     </div>

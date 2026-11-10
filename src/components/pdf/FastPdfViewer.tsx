@@ -21,10 +21,12 @@ import {
 
 export interface FastPdfViewerProps {
   url: string
+  streamUrl?: string
   title: string
   fileSize?: number
   onClose: () => void
   initialPage?: number
+  onRefreshUrl?: () => Promise<string | null>
 }
 
 function formatFileSize(bytes?: number): string {
@@ -36,12 +38,20 @@ function formatFileSize(bytes?: number): string {
 
 export function FastPdfViewer({
   url,
+  streamUrl,
   title,
   fileSize,
   onClose,
   initialPage = 1,
+  onRefreshUrl,
 }: FastPdfViewerProps) {
   // Document state
+  const [activeUrl, setActiveUrl] = useState<string>(url)
+  const [reloadTrigger, setReloadTrigger] = useState<number>(0)
+  const [isRetrying, setIsRetrying] = useState(false)
+  const [useNativeFallback, setUseNativeFallback] = useState(false)
+  const [errorDetails, setErrorDetails] = useState<{ title: string; message: string; hint: string } | null>(null)
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [pdfDoc, setPdfDoc] = useState<any>(null)
   const [totalPages, setTotalPages] = useState<number>(0)
@@ -53,6 +63,14 @@ export function FastPdfViewer({
   const [pageLoading, setPageLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [isFirstPageRendered, setIsFirstPageRendered] = useState(false)
+
+  // Synchronize when parent prop url updates
+  useEffect(() => {
+    setActiveUrl(url)
+    setUseNativeFallback(false)
+    setErrorDetails(null)
+    setErrorMsg(null)
+  }, [url])
 
   // Zoom and layout state
   const [scale, setScale] = useState<number>(1.15)
@@ -102,9 +120,12 @@ export function FastPdfViewer({
 
   // ──────────────── 1. LOAD PDF DOCUMENT WITH BYTE-RANGE STREAMING ────────────────
   useEffect(() => {
+    if (useNativeFallback) return
+
     let isCancelled = false
     setDocLoading(true)
     setErrorMsg(null)
+    setErrorDetails(null)
 
     const initPdf = async () => {
       try {
@@ -119,7 +140,7 @@ export function FastPdfViewer({
         // Configure byte-range progressive loading:
         // disableAutoFetch: true ensures ONLY the active page's byte ranges are fetched!
         const loadingTask = pdfjs.getDocument({
-          url,
+          url: activeUrl,
           rangeChunkSize: 65536, // 64 KB chunk size for fast R2 roundtrips
           disableAutoFetch: true,
           disableStream: false,
@@ -139,7 +160,37 @@ export function FastPdfViewer({
       } catch (err: unknown) {
         if (isCancelled) return
         console.error('FastPdfViewer: document loading error:', err)
-        setErrorMsg((err as Error)?.message || 'Failed to initialize PDF document.')
+
+        // Transparent auto-fallback to streamUrl if direct R2 presigned URL threw CORS / fetch error
+        if (streamUrl && activeUrl !== streamUrl) {
+          console.warn('FastPdfViewer: direct URL encountered error, switching to same-origin streamUrl:', streamUrl)
+          setActiveUrl(streamUrl)
+          return
+        }
+
+        const rawMsg = (err as Error)?.message || 'Failed to initialize PDF document.'
+        setErrorMsg(rawMsg)
+
+        // Student-friendly error classification
+        let errTitle = 'Could Not Stream PDF'
+        let errMessage = 'The document streaming server could not be reached.'
+        let errHint = 'Click "Retry Stream" to reconnect, or switch to the Native Reader below.'
+
+        if (rawMsg.includes('fetch') || rawMsg.includes('NetworkError') || rawMsg.includes('Failed to fetch')) {
+          errTitle = 'Stream Connection Interrupted'
+          errMessage = 'The PDF range request was interrupted or blocked by the network.'
+          errHint = 'Click "Retry Stream" to reconnect, or view via Native Reader.'
+        } else if (rawMsg.includes('MissingPDF') || rawMsg.includes('404')) {
+          errTitle = 'Document Not Found'
+          errMessage = 'The requested note file was not found in digital storage.'
+          errHint = 'The file may have been updated or moved. Please contact academic support.'
+        } else if (rawMsg.includes('InvalidPDF') || rawMsg.includes('corrupted')) {
+          errTitle = 'Corrupted PDF Format'
+          errMessage = 'The file header could not be parsed as a valid PDF document.'
+          errHint = 'Try refreshing or opening with the Native Reader.'
+        }
+
+        setErrorDetails({ title: errTitle, message: errMessage, hint: errHint })
         setDocLoading(false)
       }
     }
@@ -154,7 +205,27 @@ export function FastPdfViewer({
         } catch {}
       }
     }
-  }, [url])
+  }, [activeUrl, reloadTrigger, streamUrl, useNativeFallback])
+
+  // Retry document loading with fresh signed/stream URL
+  const handleRetry = async () => {
+    setIsRetrying(true)
+    setErrorMsg(null)
+    setErrorDetails(null)
+    setDocLoading(true)
+
+    try {
+      if (onRefreshUrl) {
+        const freshUrl = await onRefreshUrl()
+        if (freshUrl) {
+          setActiveUrl(freshUrl)
+        }
+      }
+      setReloadTrigger((prev) => prev + 1)
+    } finally {
+      setIsRetrying(false)
+    }
+  }
 
   // ──────────────── 2. RENDER ACTIVE PAGE ON DEMAND ────────────────
   const renderCurrentPage = useCallback(async () => {
@@ -709,8 +780,8 @@ export function FastPdfViewer({
             </div>
           )}
 
-          {/* Error Notification */}
-          {errorMsg && (
+          {/* Error Notification with Resilient Retry and Classification */}
+          {errorMsg && !useNativeFallback && (
             <div
               className="glass-card"
               style={{
@@ -718,35 +789,104 @@ export function FastPdfViewer({
                 padding: '2rem',
                 textAlign: 'center',
                 borderRadius: 'var(--radius-lg)',
-                border: '1px solid var(--color-danger)',
-                background: '#fff',
+                border: '1px solid rgba(239, 68, 68, 0.35)',
+                background: '#ffffff',
+                boxShadow: '0 20px 45px rgba(0, 0, 0, 0.12)',
               }}
             >
-              <AlertCircle size={36} color="var(--color-danger)" style={{ margin: '0 auto 12px auto' }} />
-              <h4 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 6 }}>
-                Could not stream PDF
+              <div
+                style={{
+                  width: 52,
+                  height: 52,
+                  borderRadius: '50%',
+                  background: 'rgba(239, 68, 68, 0.1)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  margin: '0 auto 14px auto',
+                }}
+              >
+                <AlertCircle size={28} color="#ef4444" />
+              </div>
+              <h4 style={{ fontSize: '1.05rem', fontWeight: 800, marginBottom: 6, color: 'var(--text-primary)' }}>
+                {errorDetails?.title || 'Could Not Stream PDF'}
               </h4>
-              <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginBottom: 16 }}>
-                {errorMsg}
+              <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginBottom: 6 }}>
+                {errorDetails?.message || errorMsg}
               </p>
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginBottom: 20 }}>
+                {errorDetails?.hint || 'Click below to reconnect the streaming session.'}
+              </p>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
                 <button
                   type="button"
-                  onClick={() => renderCurrentPage()}
+                  onClick={handleRetry}
+                  disabled={isRetrying}
                   className="btn btn-primary"
+                  style={{ fontSize: '0.8125rem', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                >
+                  {isRetrying ? (
+                    <>
+                      <Loader2 size={14} className="spinner" /> Reconnecting...
+                    </>
+                  ) : (
+                    <>
+                      <RotateCcw size={14} /> Retry Stream
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUseNativeFallback(true)}
+                  className="btn btn-secondary"
                   style={{ fontSize: '0.8125rem' }}
                 >
-                  <RotateCcw size={14} style={{ marginRight: 4 }} /> Retry
+                  Switch to Native Reader
                 </button>
                 <button
                   type="button"
                   onClick={onClose}
-                  className="btn btn-secondary"
+                  className="btn btn-neutral"
                   style={{ fontSize: '0.8125rem' }}
                 >
                   Close
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* Native Browser PDF Reader Fallback */}
+          {useNativeFallback && (
+            <div
+              style={{
+                width: '100%',
+                height: 'calc(100vh - 160px)',
+                background: '#ffffff',
+                borderRadius: 'var(--radius-md)',
+                overflow: 'hidden',
+                boxShadow: '0 12px 35px rgba(0, 0, 0, 0.18)',
+              }}
+            >
+              <object
+                data={`${activeUrl}#toolbar=0&navpanes=0&scrollbar=1`}
+                type="application/pdf"
+                width="100%"
+                height="100%"
+                style={{ border: 'none', display: 'block', width: '100%', height: '100%' }}
+              >
+                <div style={{ padding: '3rem', textAlign: 'center' }}>
+                  <p style={{ color: 'var(--text-secondary)', marginBottom: 12 }}>
+                    Inline PDF preview is not supported by your browser.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setUseNativeFallback(false)}
+                    className="btn btn-secondary"
+                  >
+                    Return to Canvas Reader
+                  </button>
+                </div>
+              </object>
             </div>
           )}
 
@@ -757,7 +897,7 @@ export function FastPdfViewer({
               boxShadow: '0 12px 35px rgba(0, 0, 0, 0.18)',
               borderRadius: 4,
               backgroundColor: '#ffffff',
-              display: isFirstPageRendered && !errorMsg ? 'block' : 'none',
+              display: isFirstPageRendered && !errorMsg && !useNativeFallback ? 'block' : 'none',
             }}
           >
             {/* Subtle Page Loading Indicator for subsequent pages */}

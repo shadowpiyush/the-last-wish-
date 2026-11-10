@@ -114,6 +114,8 @@ export async function GET(request: Request) {
         id: p.id,
         full_name: p.full_name || 'Anonymous User',
         email: p.email || null,
+        email_confirmed_at: (p.email_confirmed_at as string | null) || null,
+        email_verified: Boolean(p.email_confirmed_at),
         mobile_number: p.mobile_number || null,
         profile_picture_url: getAvatarUrl({
           id: p.id as string,

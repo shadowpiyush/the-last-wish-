@@ -3,6 +3,7 @@ import { verifyAdmin } from '@/lib/auth/admin'
 import { getR2Client, getR2Config } from '@/lib/r2/client'
 import { UploadPartCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { PRESIGNED_URL_EXPIRES_IN_SECONDS } from '@/lib/config/ebooks'
 
 export async function POST(request: Request) {
   try {
@@ -88,7 +89,7 @@ export async function POST(request: Request) {
         })
 
         const presignedUrl = await getSignedUrl(r2Client, command, {
-          expiresIn: 7200,
+          expiresIn: PRESIGNED_URL_EXPIRES_IN_SECONDS,
         })
 
         return {

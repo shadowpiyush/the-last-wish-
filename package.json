@@ -15,7 +15,8 @@
     "test:profile-image": "node --experimental-strip-types --test scripts/test-profile-image-validation.ts",
     "test:profile-admin": "node --env-file=.env.local scripts/test-profile-picture-and-admin.mjs",
     "test:ebooks": "node scripts/test-open-book.mjs",
-    "test:ebook-upload": "node scripts/test-ebook-upload-e2e.mjs"
+    "test:ebook-upload": "node scripts/test-ebook-upload-e2e.mjs",
+    "test:large-ebook": "node scripts/test-large-ebook-upload.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1146.0",

@@ -5,6 +5,9 @@ import { createClient } from '@supabase/supabase-js'
 
 export const dynamic = 'force-dynamic'
 
+// In-memory cache for resolved R2 keys so subsequent byte-range requests execute with zero latency
+const resolvedR2KeyCache = new Map<string, string>()
+
 /**
  * High-performance streaming proxy for Cloudflare R2 and Supabase storage.
  * Supports HTTP 206 Range requests (byte-range streaming) so browsers and PDF.js
@@ -33,22 +36,27 @@ export async function GET(request: Request) {
     if (isConfigured) {
       try {
         const r2Client = getR2Client()
-        const candidateKeys = Array.from(
-          new Set([
-            cleanPath,
-            `${bucket}/${cleanPath}`,
-            cleanPath.startsWith(`${bucket}/`) ? cleanPath.slice(bucket.length + 1) : null,
-          ].filter(Boolean) as string[])
-        )
+        const cacheKey = `${bucket}:${cleanPath}`
+        let foundKey: string | null = resolvedR2KeyCache.get(cacheKey) || null
 
-        let foundKey: string | null = null
-        for (const testKey of candidateKeys) {
-          try {
-            await r2Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: testKey }))
-            foundKey = testKey
-            break
-          } catch {
-            // Check next candidate key
+        if (!foundKey) {
+          const candidateKeys = Array.from(
+            new Set([
+              cleanPath,
+              `${bucket}/${cleanPath}`,
+              cleanPath.startsWith(`${bucket}/`) ? cleanPath.slice(bucket.length + 1) : null,
+            ].filter(Boolean) as string[])
+          )
+
+          for (const testKey of candidateKeys) {
+            try {
+              await r2Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: testKey }))
+              foundKey = testKey
+              resolvedR2KeyCache.set(cacheKey, testKey)
+              break
+            } catch {
+              // Check next candidate key
+            }
           }
         }
 
@@ -62,7 +70,25 @@ export async function GET(request: Request) {
             getParams.Range = rangeHeader
           }
 
-          const res = await r2Client.send(new GetObjectCommand(getParams))
+          let res
+          try {
+            res = await r2Client.send(new GetObjectCommand(getParams))
+          } catch (getErr: unknown) {
+            const errObj = getErr as { name?: string; $metadata?: { httpStatusCode?: number } }
+            if (errObj?.name === 'InvalidRange' || errObj?.$metadata?.httpStatusCode === 416) {
+              const head = await r2Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: foundKey }))
+              return new Response(null, {
+                status: 416,
+                headers: {
+                  'Content-Range': `bytes */${head.ContentLength || 0}`,
+                  'Accept-Ranges': 'bytes',
+                  'Content-Type': 'application/pdf',
+                  'Access-Control-Allow-Origin': '*',
+                },
+              })
+            }
+            throw getErr
+          }
 
           if (res.Body) {
             const isPartial = Boolean(rangeHeader && res.ContentRange)
@@ -174,32 +200,45 @@ export async function HEAD(request: Request) {
     if (isConfigured) {
       try {
         const r2Client = getR2Client()
-        const candidateKeys = Array.from(
-          new Set([
-            cleanPath,
-            `${bucket}/${cleanPath}`,
-            cleanPath.startsWith(`${bucket}/`) ? cleanPath.slice(bucket.length + 1) : null,
-          ].filter(Boolean) as string[])
-        )
+        const cacheKey = `${bucket}:${cleanPath}`
+        let foundKey = resolvedR2KeyCache.get(cacheKey) || null
 
-        for (const testKey of candidateKeys) {
-          try {
-            const head = await r2Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: testKey }))
-            const headers: Record<string, string> = {
-              'Content-Type': head.ContentType || 'application/pdf',
-              'Accept-Ranges': 'bytes',
-              'Access-Control-Allow-Origin': '*',
-              'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, ETag',
-              'Cache-Control': 'public, max-age=86400',
-            }
-            if (head.ContentLength !== undefined) {
-              headers['Content-Length'] = String(head.ContentLength)
-            }
-            if (head.ETag) {
-              headers['ETag'] = head.ETag
-            }
-            return new Response(null, { status: 200, headers })
-          } catch {}
+        if (!foundKey) {
+          const candidateKeys = Array.from(
+            new Set([
+              cleanPath,
+              `${bucket}/${cleanPath}`,
+              cleanPath.startsWith(`${bucket}/`) ? cleanPath.slice(bucket.length + 1) : null,
+            ].filter(Boolean) as string[])
+          )
+
+          for (const testKey of candidateKeys) {
+            try {
+              await r2Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: testKey }))
+              foundKey = testKey
+              resolvedR2KeyCache.set(cacheKey, testKey)
+              break
+            } catch {}
+          }
+        }
+
+        if (foundKey) {
+          const head = await r2Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: foundKey }))
+          const headers: Record<string, string> = {
+            'Content-Type': head.ContentType || 'application/pdf',
+            'Accept-Ranges': 'bytes',
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': 'Range, Accept, Content-Type, If-Range, If-None-Match',
+            'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, ETag',
+            'Cache-Control': 'public, max-age=86400, stale-while-revalidate=86400',
+          }
+          if (head.ContentLength !== undefined) {
+            headers['Content-Length'] = String(head.ContentLength)
+          }
+          if (head.ETag) {
+            headers['ETag'] = head.ETag
+          }
+          return new Response(null, { status: 200, headers })
         }
       } catch {}
     }
@@ -209,9 +248,24 @@ export async function HEAD(request: Request) {
       headers: {
         'Accept-Ranges': 'bytes',
         'Content-Type': 'application/pdf',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, ETag',
       },
     })
   } catch {
     return new Response(null, { status: 500 })
   }
+}
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+      'Access-Control-Allow-Headers': 'Range, Accept, Content-Type, If-Range, If-None-Match',
+      'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, ETag',
+      'Access-Control-Max-Age': '86400',
+    },
+  })
 }
